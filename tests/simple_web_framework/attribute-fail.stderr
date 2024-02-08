@@ -1,0 +1,53 @@
+error: missing value in attribute
+ --> tests/simple_web_framework/attribute-fail.rs:6:27
+  |
+6 |     let _ = html! { <span class=* /> };
+  |                           ^^^^^
+
+error: expected identifier, block or shorthand property
+  --> tests/simple_web_framework/attribute-fail.rs:10:27
+   |
+10 |     let _ = html! { <span ()=42 /> };
+   |                           ^
+
+error: missing value in attribute
+  --> tests/simple_web_framework/attribute-fail.rs:14:27
+   |
+14 |     let _ = html! { <span class= /> };
+   |                           ^^^^^
+
+error: missing value in attribute
+  --> tests/simple_web_framework/attribute-fail.rs:15:27
+   |
+15 |     let _ = html! { <span {class}= /> };
+   |                           ^^^^^^^
+
+error: missing `=` token in attribute
+  --> tests/simple_web_framework/attribute-fail.rs:19:27
+   |
+19 |     let _ = html! { <span class /> };
+   |                           ^^^^^
+
+error: attribute already defined
+  --> tests/simple_web_framework/attribute-fail.rs:24:38
+   |
+24 |     let _ = html! { <span class="42" class="43" class=["44", "45"] {class} /> };
+   |                                      ^^^^^
+
+error: attribute already defined
+  --> tests/simple_web_framework/attribute-fail.rs:24:49
+   |
+24 |     let _ = html! { <span class="42" class="43" class=["44", "45"] {class} /> };
+   |                                                 ^^^^^
+
+error: attribute already defined
+  --> tests/simple_web_framework/attribute-fail.rs:24:69
+   |
+24 |     let _ = html! { <span class="42" class="43" class=["44", "45"] {class} /> };
+   |                                                                     ^^^^^
+
+error: expected identifier
+  --> tests/simple_web_framework/attribute-fail.rs:28:28
+   |
+28 |     let _ = html! { <span {"class"} /> };
+   |                            ^^^^^^^

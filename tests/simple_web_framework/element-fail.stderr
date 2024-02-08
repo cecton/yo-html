@@ -1,0 +1,23 @@
+error: could not find matching close fragment
+ --> tests/simple_web_framework/element-fail.rs:6:21
+  |
+6 |     let _ = html! { <><span /> };
+  |                     ^
+
+error: could not find matching close tag
+  --> tests/simple_web_framework/element-fail.rs:10:22
+   |
+10 |     let _ = html! { <div> };
+   |                      ^^^
+
+error: could not parse element
+  --> tests/simple_web_framework/element-fail.rs:14:21
+   |
+14 |     let _ = html! { / };
+   |                     ^
+
+error: expected `>`
+  --> tests/simple_web_framework/element-fail.rs:18:27
+   |
+18 |     let _ = html! { <div /!> };
+   |                           ^
