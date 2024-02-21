@@ -6,7 +6,7 @@ fn run_app() {
 
     log("Hello World!");
     let app = html! {
-        <div><span>{"Hello"}</span><br/>{"World!"}</div>
+        <div><span style="font-weight: bold;">{"Hello"}</span><br/>{"World!"}</div>
     };
     let window = web_sys::window().unwrap();
     let document = window.document().unwrap();

@@ -16,6 +16,7 @@ pub enum VNode {
         tag: &'static str,
         id: u64,
         element: RefCell<Option<web_sys::Element>>,
+        dyn_attrs: Rc<[(IString, IString)]>,
         children: Rc<[VNode]>,
         // attributes...
     },
@@ -83,12 +84,24 @@ impl VNode {
     pub fn update_dom_element(&self) {
         match self {
             Self::Tagged {
-                element, children, ..
+                element,
+                dyn_attrs,
+                children,
+                ..
             } => {
                 let element = element.borrow();
                 let Some(element) = element.as_ref() else {
                     return;
                 };
+                for attr_name in element.get_attribute_names() {
+                    let attr_name = attr_name.as_string().unwrap();
+                    if !dyn_attrs.iter().any(|(s, _)| s == &attr_name) {
+                        element.remove_attribute(&attr_name).unwrap();
+                    }
+                }
+                for (attr_name, attr_value) in dyn_attrs.iter() {
+                    element.set_attribute(attr_name, attr_value).unwrap();
+                }
                 // TODO optimize children creation/removal/re-ordering
                 element.set_inner_html("");
                 for child in children.iter() {
@@ -148,6 +161,11 @@ impl VNodeBuilder {
             tag: self.tag,
             id: self.id,
             element: Default::default(),
+            dyn_attrs: Rc::from(
+                std::mem::take(&mut self.dyn_attrs)
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            ),
             children: Rc::from(std::mem::take(&mut self.children)),
         }
     }
