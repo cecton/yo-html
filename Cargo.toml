@@ -2,11 +2,17 @@
 name = "yo-html"
 version = "0.1.0"
 edition = "2021"
+autoexamples = false
+rust-version = "1.76"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
 proc-macro = true
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"
 
 [dependencies]
 syn = { version = "2", features = ["full"] }

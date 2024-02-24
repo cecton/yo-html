@@ -3,6 +3,17 @@ mod parser;
 
 #[proc_macro]
 pub fn html(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    if input.is_empty() {
+        return quote::quote! {
+            {
+                use html_context::*;
+
+                Fragment::from([])
+            }
+        }
+        .into();
+    }
+
     // Parse the input tokens into a syn AST
     let item = syn::parse_macro_input!(input as HtmlElement);
 

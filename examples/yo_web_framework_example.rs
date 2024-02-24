@@ -1,8 +1,15 @@
 use implicit_clone::unsync::*;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
+
+fn window() -> web_sys::Window {
+    web_sys::window().unwrap()
+}
+
+fn document() -> web_sys::Document {
+    window().document().unwrap()
+}
 
 #[wasm_bindgen]
 extern "C" {
@@ -12,36 +19,51 @@ extern "C" {
 
 #[derive(Clone)]
 pub enum VNode {
-    Tagged {
-        tag: &'static str,
-        id: u64,
-        element: RefCell<Option<web_sys::Element>>,
-        dyn_attrs: Rc<[(IString, IString)]>,
-        children: Rc<[VNode]>,
-        // attributes...
-    },
-    Text(IString),
+    Element(Rc<VNodeElement>),
+    Text(Rc<VNodeText>),
     Fragment(Rc<[VNode]>),
     Component(Rc<dyn Component>),
 }
 
 impl implicit_clone::ImplicitClone for VNode {}
 
+impl PartialEq for VNode {
+    fn eq(&self, rhs: &Self) -> bool {
+        use VNode::*;
+        match (self, rhs) {
+            (Element(a), Element(b)) => a == b,
+            (Text(a), Text(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for VNode {}
+
 impl From<String> for VNode {
     fn from(s: String) -> VNode {
-        VNode::Text(s.into())
+        VNode::Text(Rc::new(VNodeText {
+            text: s.into(),
+            node: None,
+        }))
     }
 }
 
 impl From<&'static str> for VNode {
     fn from(s: &'static str) -> VNode {
-        VNode::Text(s.into())
+        VNode::Text(Rc::new(VNodeText {
+            text: s.into(),
+            node: None,
+        }))
     }
 }
 
 impl From<std::fmt::Arguments<'_>> for VNode {
     fn from(args: std::fmt::Arguments) -> VNode {
-        VNode::Text(args.into())
+        VNode::Text(Rc::new(VNodeText {
+            text: args.into(),
+            node: None,
+        }))
     }
 }
 
@@ -62,54 +84,238 @@ impl VNode {
         }
     }
 
-    pub fn create_dom_element(&self, container: &web_sys::Element) {
-        let window = web_sys::window().unwrap();
-        let document = window.document().unwrap();
+    pub fn create_dom_element(self) -> Self {
         match self {
-            Self::Tagged { tag, element, .. } => {
-                element.replace(Some(document.create_element(tag).unwrap()));
-                container
-                    .append_child(&element.borrow().clone().unwrap().unchecked_into())
-                    .unwrap();
-                self.update_dom_element();
-            }
-            Self::Text(s) => {
-                let node = document.create_text_node(s);
-                container.append_child(&node).unwrap();
-            }
+            Self::Element(x) => Self::Element(Rc::new(Rc::unwrap_or_clone(x).create_dom_element())),
+            Self::Text(x) => Self::Text(Rc::new(Rc::unwrap_or_clone(x).create_dom_element())),
+            Self::Fragment(x) => Self::Fragment(x),
             _ => todo!(),
         }
     }
 
-    pub fn update_dom_element(&self) {
-        match self {
-            Self::Tagged {
-                element,
-                dyn_attrs,
-                children,
-                ..
-            } => {
-                let element = element.borrow();
-                let Some(element) = element.as_ref() else {
-                    return;
-                };
-                for attr_name in element.get_attribute_names() {
-                    let attr_name = attr_name.as_string().unwrap();
-                    if !dyn_attrs.iter().any(|(s, _)| s == &attr_name) {
-                        element.remove_attribute(&attr_name).unwrap();
-                    }
-                }
-                for (attr_name, attr_value) in dyn_attrs.iter() {
-                    element.set_attribute(attr_name, attr_value).unwrap();
-                }
-                // TODO optimize children creation/removal/re-ordering
-                element.set_inner_html("");
-                for child in children.iter() {
-                    child.create_dom_element(element);
-                }
-            }
+    pub fn update_dom_element(self, new_vnode: Self) -> Self {
+        match (self, new_vnode) {
+            (Self::Element(a), Self::Element(b)) => Self::Element(Rc::new(
+                Rc::unwrap_or_clone(a).update_dom_element(Rc::unwrap_or_clone(b)),
+            )),
+            (Self::Text(a), Self::Text(b)) => Self::Text(Rc::new(
+                Rc::unwrap_or_clone(a).update_dom_element(Rc::unwrap_or_clone(b)),
+            )),
             _ => todo!(),
         }
+    }
+
+    pub fn remove_dom_element(self) -> Self {
+        match self {
+            Self::Element(x) => Self::Element(Rc::new(Rc::unwrap_or_clone(x).remove_dom_element())),
+            Self::Text(x) => Self::Text(Rc::new(Rc::unwrap_or_clone(x).remove_dom_element())),
+            _ => todo!(),
+        }
+    }
+
+    pub fn node(&self) -> Option<&web_sys::Node> {
+        match self {
+            Self::Element(x) => x.node(),
+            Self::Text(x) => x.node(),
+            _ => todo!(),
+        }
+    }
+}
+
+#[derive(Clone, Eq)]
+pub struct VNodeElement {
+    tag: &'static str,
+    id: u64,
+    // TODO store element globally?
+    element: Option<web_sys::Element>,
+    dyn_attrs: Rc<[(IString, IString)]>,
+    children: Rc<[VNode]>,
+}
+
+impl PartialEq for VNodeElement {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.id.eq(&rhs.id)
+    }
+}
+
+impl VNodeElement {
+    pub fn create_dom_element(self) -> Self {
+        if self.element.is_some() {
+            return self;
+        }
+
+        let Self {
+            tag,
+            dyn_attrs,
+            children,
+            ..
+        } = self;
+
+        log("create dom element");
+        let element = document().create_element(tag).unwrap();
+        for (attr_name, attr_value) in dyn_attrs.iter() {
+            element.set_attribute(attr_name, attr_value).unwrap();
+        }
+        let children = children
+            .iter()
+            .map(|child| {
+                let child = child.clone().create_dom_element();
+                element
+                    .append_child(child.node().unwrap().unchecked_ref())
+                    .unwrap();
+                child
+            })
+            .collect();
+
+        Self {
+            element: Some(element),
+            dyn_attrs,
+            children,
+            ..self
+        }
+    }
+
+    pub fn update_dom_element(self, new_vnode: Self) -> Self {
+        if self.element.is_none() {
+            return self;
+        }
+
+        let Self {
+            tag,
+            id,
+            element,
+            dyn_attrs,
+            children,
+        } = self;
+        let element = element.unwrap();
+
+        log("update dom element");
+        dyn_attrs
+            .iter()
+            .map(|(x, _)| x)
+            .filter(|attr_name| !new_vnode.dyn_attrs.iter().any(|(x, _)| x == *attr_name))
+            .for_each(|attr_name| {
+                element.remove_attribute(&attr_name).unwrap();
+            });
+
+        new_vnode
+            .dyn_attrs
+            .iter()
+            .filter(|(attr_name, attr_value)| {
+                if let Some((_, old_value)) = dyn_attrs.iter().find(|(x, _)| x == attr_name) {
+                    attr_value != old_value
+                } else {
+                    true
+                }
+            })
+            .for_each(|(attr_name, attr_value)| {
+                element.set_attribute(attr_name, attr_value).unwrap();
+            });
+
+        let mut new_children: Vec<VNode> = Vec::with_capacity(new_vnode.children.len());
+
+        let mut next_sibling = None;
+        new_vnode.children.iter().for_each(|new_child| {
+            // TODO reordering
+            new_children.push(
+                if let Some(old_child) = children.iter().find(|x| *x == new_child) {
+                    let child = old_child.clone().update_dom_element(new_child.clone());
+                    next_sibling = child.node().unwrap().next_sibling();
+                    child
+                } else {
+                    let child = new_child.clone().create_dom_element();
+                    // NOTE: this is "insert_after"
+                    // http://stackoverflow.com/questions/4793604/ddg#4793630
+                    element
+                        .insert_before(child.node().unwrap(), next_sibling.as_ref())
+                        .unwrap();
+                    child
+                },
+            );
+        });
+
+        children
+            .iter()
+            .filter(|child| !new_vnode.children.iter().any(|x| x == *child))
+            .for_each(|child| {
+                child.clone().remove_dom_element();
+            });
+
+        Self {
+            tag,
+            id,
+            element: Some(element),
+            dyn_attrs: new_vnode.dyn_attrs,
+            children: Rc::from(new_children),
+        }
+    }
+
+    pub fn remove_dom_element(mut self) -> Self {
+        if let Some(element) = self.element.take() {
+            log("remove dom element");
+            element.remove();
+        }
+        self
+    }
+
+    pub fn node(&self) -> Option<&web_sys::Node> {
+        self.element.as_ref().map(|x| x.unchecked_ref())
+    }
+}
+
+#[derive(Clone, Eq)]
+pub struct VNodeText {
+    text: IString,
+    node: Option<web_sys::Text>,
+}
+
+impl PartialEq for VNodeText {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.text.eq(&rhs.text)
+    }
+}
+
+impl VNodeText {
+    pub fn create_dom_element(self) -> Self {
+        if self.node.is_some() {
+            return self;
+        }
+
+        log("create dom text");
+        let node = document().create_text_node(&self.text);
+        VNodeText {
+            node: Some(node),
+            ..self
+        }
+    }
+
+    // TODO not very useful if you cant do == in the first place...
+    pub fn update_dom_element(self, new_vnode: Self) -> Self {
+        if let Some(node) = self.node {
+            if self.text != new_vnode.text {
+                log("update dom text");
+                node.set_node_value(Some(&new_vnode.text));
+            }
+
+            Self {
+                text: new_vnode.text,
+                node: Some(node),
+            }
+        } else {
+            self
+        }
+    }
+
+    pub fn remove_dom_element(mut self) -> Self {
+        if let Some(node) = self.node.take() {
+            log("remove dom text");
+            node.remove();
+        }
+        self
+    }
+
+    pub fn node(&self) -> Option<&web_sys::Node> {
+        self.node.as_ref().map(|x| x.unchecked_ref())
     }
 }
 
@@ -157,7 +363,7 @@ impl VNodeBuilder {
     }
 
     pub fn finish(&mut self) -> VNode {
-        VNode::Tagged {
+        VNode::Element(Rc::new(VNodeElement {
             tag: self.tag,
             id: self.id,
             element: Default::default(),
@@ -167,7 +373,7 @@ impl VNodeBuilder {
                     .collect::<Vec<_>>(),
             ),
             children: Rc::from(std::mem::take(&mut self.children)),
-        }
+        }))
     }
 }
 
@@ -223,5 +429,6 @@ pub mod html_context {
 pub mod prelude {
     pub use super::html_context;
     pub use super::log;
+    pub use super::VNode;
     pub use yo_html::html;
 }
