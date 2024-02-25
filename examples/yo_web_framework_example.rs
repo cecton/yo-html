@@ -215,12 +215,23 @@ impl VNodeElement {
         let mut new_children: Vec<VNode> = Vec::with_capacity(new_vnode.children.len());
 
         let mut next_sibling = None;
+        let mut previous_pos = 0;
         new_vnode.children.iter().for_each(|new_child| {
-            // TODO reordering
             new_children.push(
-                if let Some(old_child) = children.iter().find(|x| *x == new_child) {
+                if let Some((i, old_child)) =
+                    children.iter().enumerate().find(|(_, x)| *x == new_child)
+                {
                     let child = old_child.clone().update_dom_element(new_child.clone());
+                    if i < previous_pos {
+                        // NOTE: this is "insert_after"
+                        // http://stackoverflow.com/questions/4793604/ddg#4793630
+                        element
+                            .insert_before(child.node().unwrap(), next_sibling.as_ref())
+                            .unwrap();
+                        log("relocate");
+                    }
                     next_sibling = child.node().unwrap().next_sibling();
+                    previous_pos = i;
                     child
                 } else {
                     let child = new_child.clone().create_dom_element();
