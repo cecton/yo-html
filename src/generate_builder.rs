@@ -5,17 +5,6 @@ impl HtmlElement {
         use syn::spanned::Spanned;
         use HtmlElement::*;
 
-        thread_local! {
-            static ID: std::sync::atomic::AtomicU64 = {
-                // NOTE good enough way to get a random initial value across executions and threads
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                std::process::id().hash(&mut hasher);
-                std::thread::current().id().hash(&mut hasher);
-                hasher.finish().into()
-            };
-        }
-
         match self {
             Tagged(element) => {
                 let tag = &element.opening_tag.tag;
@@ -111,10 +100,8 @@ impl HtmlElement {
                     })
                     .collect::<Vec<_>>();
 
-                let id = ID.with(|x| x.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-
                 quote::quote! {
-                    <#tag #generics>::builder(#tag_str, #id)
+                    <#tag #generics>::builder(#tag_str)
                         #(#attributes)*
                         #(#children)*
                         .finish()

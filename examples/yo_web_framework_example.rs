@@ -17,6 +17,8 @@ extern "C" {
     pub fn log(message: &str);
 }
 
+type Key = u64;
+
 #[derive(Clone)]
 pub enum VNode {
     Element(Rc<VNodeElement>),
@@ -27,18 +29,11 @@ pub enum VNode {
 
 impl implicit_clone::ImplicitClone for VNode {}
 
-impl PartialEq for VNode {
-    fn eq(&self, rhs: &Self) -> bool {
-        use VNode::*;
-        match (self, rhs) {
-            (Element(a), Element(b)) => a == b,
-            (Text(a), Text(b)) => a == b,
-            _ => false,
-        }
+impl From<IString> for VNode {
+    fn from(text: IString) -> VNode {
+        VNode::Text(Rc::new(VNodeText { text, node: None }))
     }
 }
-
-impl Eq for VNode {}
 
 impl From<String> for VNode {
     fn from(s: String) -> VNode {
@@ -74,10 +69,10 @@ impl<const N: usize> From<[VNode; N]> for VNode {
 }
 
 impl VNode {
-    pub fn builder(tag: &'static str, id: u64) -> VNodeBuilder {
+    pub fn builder(tag: &'static str) -> VNodeBuilder {
         VNodeBuilder {
             tag,
-            id,
+            key: Default::default(),
             class: Default::default(),
             dyn_attrs: Default::default(),
             children: Default::default(),
@@ -120,22 +115,22 @@ impl VNode {
             _ => todo!(),
         }
     }
+
+    pub fn key(&self) -> Option<Key> {
+        match self {
+            Self::Element(x) => x.key(),
+            _ => None,
+        }
+    }
 }
 
-#[derive(Clone, Eq)]
+#[derive(Clone)]
 pub struct VNodeElement {
     tag: &'static str,
-    id: u64,
-    // TODO store element globally?
+    key: Option<Key>,
     element: Option<web_sys::Element>,
     dyn_attrs: Rc<[(IString, IString)]>,
     children: Rc<[VNode]>,
-}
-
-impl PartialEq for VNodeElement {
-    fn eq(&self, rhs: &Self) -> bool {
-        self.id.eq(&rhs.id)
-    }
 }
 
 impl VNodeElement {
@@ -182,7 +177,7 @@ impl VNodeElement {
 
         let Self {
             tag,
-            id,
+            key: _,
             element,
             dyn_attrs,
             children,
@@ -214,47 +209,64 @@ impl VNodeElement {
 
         let mut new_children: Vec<VNode> = Vec::with_capacity(new_vnode.children.len());
 
-        let mut next_sibling = None;
-        let mut previous_pos = 0;
-        new_vnode.children.iter().for_each(|new_child| {
-            new_children.push(
-                if let Some((i, old_child)) =
-                    children.iter().enumerate().find(|(_, x)| *x == new_child)
-                {
-                    let child = old_child.clone().update_dom_element(new_child.clone());
-                    if i < previous_pos {
+        let mut next_sibling = element.first_child();
+        let mut to_remove = vec![true; new_children.capacity()];
+        new_vnode
+            .children
+            .iter()
+            .enumerate()
+            .for_each(|(new_pos, new_child)| {
+                new_children.push(if let Some(key) = new_child.key() {
+                    if let Some((old_pos, old_child)) = children
+                        .iter()
+                        .enumerate()
+                        .find(|(_, x)| x.key() == Some(key))
+                    {
+                        let child = old_child.clone().update_dom_element(new_child.clone());
+                        if old_pos != new_pos {
+                            // NOTE: this is "insert_after"
+                            // http://stackoverflow.com/questions/4793604/ddg#4793630
+                            element
+                                .insert_before(child.node().unwrap(), next_sibling.as_ref())
+                                .unwrap();
+                            log("relocate");
+                        }
+                        next_sibling = child.node().unwrap().next_sibling();
+                        to_remove[old_pos] = false;
+                        child
+                    } else {
+                        let child = new_child.clone().create_dom_element();
                         // NOTE: this is "insert_after"
                         // http://stackoverflow.com/questions/4793604/ddg#4793630
                         element
                             .insert_before(child.node().unwrap(), next_sibling.as_ref())
                             .unwrap();
-                        log("relocate");
+                        child
                     }
+                } else if let Some(old_child) = children.get(new_pos) {
+                    let child = old_child.clone().update_dom_element(new_child.clone());
                     next_sibling = child.node().unwrap().next_sibling();
-                    previous_pos = i;
+                    to_remove[new_pos] = false;
                     child
                 } else {
                     let child = new_child.clone().create_dom_element();
-                    // NOTE: this is "insert_after"
-                    // http://stackoverflow.com/questions/4793604/ddg#4793630
-                    element
-                        .insert_before(child.node().unwrap(), next_sibling.as_ref())
-                        .unwrap();
+                    element.append_child(child.node().unwrap()).unwrap();
                     child
-                },
-            );
-        });
+                });
+            });
 
         children
             .iter()
-            .filter(|child| !new_vnode.children.iter().any(|x| x == *child))
-            .for_each(|child| {
-                child.clone().remove_dom_element();
+            .zip(to_remove.into_iter())
+            .for_each(|(child, to_remove)| {
+                if to_remove {
+                    child.clone().remove_dom_element();
+                }
             });
 
         Self {
             tag,
-            id,
+            key: new_vnode.key,
             element: Some(element),
             dyn_attrs: new_vnode.dyn_attrs,
             children: Rc::from(new_children),
@@ -272,18 +284,16 @@ impl VNodeElement {
     pub fn node(&self) -> Option<&web_sys::Node> {
         self.element.as_ref().map(|x| x.unchecked_ref())
     }
+
+    pub fn key(&self) -> Option<Key> {
+        self.key
+    }
 }
 
-#[derive(Clone, Eq)]
+#[derive(Clone)]
 pub struct VNodeText {
     text: IString,
     node: Option<web_sys::Text>,
-}
-
-impl PartialEq for VNodeText {
-    fn eq(&self, rhs: &Self) -> bool {
-        self.text.eq(&rhs.text)
-    }
 }
 
 impl VNodeText {
@@ -300,7 +310,6 @@ impl VNodeText {
         }
     }
 
-    // TODO not very useful if you cant do == in the first place...
     pub fn update_dom_element(self, new_vnode: Self) -> Self {
         if let Some(node) = self.node {
             if self.text != new_vnode.text {
@@ -332,13 +341,21 @@ impl VNodeText {
 
 pub struct VNodeBuilder {
     tag: &'static str,
-    id: u64,
+    key: Option<Key>,
     class: Vec<IString>,
     dyn_attrs: HashMap<IString, IString>,
     children: Vec<VNode>,
 }
 
 impl VNodeBuilder {
+    pub fn set_attr_key(&mut self, key: impl std::hash::Hash) -> &mut Self {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        self.key.replace(hasher.finish().into());
+        self
+    }
+
     pub fn set_attr_class(&mut self, class: impl Into<IString>) -> &mut Self {
         self.add_attr_class(class, 1)
     }
@@ -354,9 +371,9 @@ impl VNodeBuilder {
         self
     }
 
-    pub fn add_child(&mut self, element: impl Into<VNode>, additional: usize) -> &mut Self {
+    pub fn add_child(&mut self, vnode: impl Into<VNode>, additional: usize) -> &mut Self {
         self.children.reserve_exact(additional);
-        self.children.push(element.into());
+        self.children.push(vnode.into());
         self
     }
 
@@ -376,7 +393,7 @@ impl VNodeBuilder {
     pub fn finish(&mut self) -> VNode {
         VNode::Element(Rc::new(VNodeElement {
             tag: self.tag,
-            id: self.id,
+            key: self.key,
             element: Default::default(),
             dyn_attrs: Rc::from(
                 std::mem::take(&mut self.dyn_attrs)
@@ -395,7 +412,7 @@ pub struct MyComponent<T = ()> {
 }
 
 impl<T> MyComponent<T> {
-    pub fn builder(_tag: &'static str, _id: u64) -> MyComponentBuilder<T> {
+    pub fn builder(_tag: &'static str) -> MyComponentBuilder<T> {
         MyComponentBuilder {
             phantom: std::marker::PhantomData,
         }
@@ -431,6 +448,8 @@ impl<T: 'static> From<MyComponentProps<T>> for VNode {
 pub mod html_context {
     pub type div = super::VNode;
     pub type span = super::VNode;
+    pub type ul = super::VNode;
+    pub type li = super::VNode;
     pub type br = super::VNode;
     pub type Text = super::VNode;
     pub type Fragment = super::VNode;
@@ -441,5 +460,6 @@ pub mod prelude {
     pub use super::html_context;
     pub use super::log;
     pub use super::VNode;
+    pub use implicit_clone::unsync::*;
     pub use yo_html::html;
 }
