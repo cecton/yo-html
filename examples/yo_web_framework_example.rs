@@ -79,11 +79,30 @@ impl VNode {
         }
     }
 
-    pub fn create_dom(self) -> Self {
+    pub fn create_dom(
+        self,
+        container: &web_sys::Node,
+        before_sibling: Option<&web_sys::Node>,
+    ) -> Self {
         match self {
-            Self::Element(x) => Self::Element(Rc::new(Rc::unwrap_or_clone(x).create_dom())),
-            Self::Text(x) => Self::Text(Rc::new(Rc::unwrap_or_clone(x).create_dom())),
-            Self::Fragment(x) => Self::Fragment(Rc::new(Rc::unwrap_or_clone(x).create_dom())),
+            Self::Element(x) => Self::Element(Rc::new(
+                Rc::unwrap_or_clone(x).create_dom(container, before_sibling),
+            )),
+            Self::Text(x) => Self::Text(Rc::new(
+                Rc::unwrap_or_clone(x).create_dom(container, before_sibling),
+            )),
+            Self::Fragment(x) => Self::Fragment(Rc::new(
+                Rc::unwrap_or_clone(x).create_dom(container, before_sibling),
+            )),
+            _ => todo!(),
+        }
+    }
+
+    pub fn remove_dom(self) -> Self {
+        match self {
+            Self::Element(x) => Self::Element(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
+            Self::Text(x) => Self::Text(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
+            Self::Fragment(x) => Self::Fragment(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
             _ => todo!(),
         }
     }
@@ -107,7 +126,7 @@ impl VNode {
         match self {
             Self::Element(x) => x.node(),
             Self::Text(x) => x.node(),
-            Self::Fragment(x) => x.node(),
+            Self::Fragment(x) => Some(x.node()),
             _ => todo!(),
         }
     }
@@ -130,11 +149,15 @@ pub struct VNodeElement {
     key: Option<Key>,
     node: Option<web_sys::Element>,
     dyn_attrs: Rc<[(IString, IString)]>,
-    children: Rc<[VNode]>,
+    fragment: VNodeFragment,
 }
 
 impl VNodeElement {
-    pub fn create_dom(self) -> Self {
+    pub fn create_dom(
+        self,
+        container: &web_sys::Node,
+        before_sibling: Option<&web_sys::Node>,
+    ) -> Self {
         if self.node.is_some() {
             return self;
         }
@@ -142,7 +165,7 @@ impl VNodeElement {
         let Self {
             tag,
             dyn_attrs,
-            children,
+            fragment,
             ..
         } = self;
 
@@ -151,21 +174,22 @@ impl VNodeElement {
         for (attr_name, attr_value) in dyn_attrs.iter() {
             node.set_attribute(attr_name, attr_value).unwrap();
         }
-        let children = children
-            .iter()
-            .map(|child| {
-                let child = child.clone().create_dom();
-                node.append_child(child.node().unwrap()).unwrap();
-                child
-            })
-            .collect();
+        let fragment = fragment.create_dom(&node, None);
+        container.insert_before(&node, before_sibling).unwrap();
 
         Self {
             node: Some(node),
             dyn_attrs,
-            children,
+            fragment,
             ..self
         }
+    }
+
+    pub fn remove_dom(mut self) -> Self {
+        if let Some(node) = self.node.take() {
+            node.remove();
+        }
+        self
     }
 
     pub fn update(self, new_vnode: Self) -> Self {
@@ -178,7 +202,7 @@ impl VNodeElement {
             key: _,
             node,
             dyn_attrs,
-            children,
+            fragment,
         } = self;
         let node = node.unwrap();
 
@@ -205,72 +229,14 @@ impl VNodeElement {
                 node.set_attribute(attr_name, attr_value).unwrap();
             });
 
-        let mut new_children: Vec<VNode> = Vec::with_capacity(new_vnode.children.len());
-
-        let mut next_sibling = node.first_child();
-        let mut to_remove = vec![true; new_vnode.children.len()];
-        new_vnode
-            .children
-            .iter()
-            .enumerate()
-            .for_each(|(new_pos, new_child)| {
-                new_children.push(if let Some(key) = new_child.key() {
-                    if let Some((old_pos, old_child)) = children
-                        .iter()
-                        .enumerate()
-                        .find(|(_, x)| x.key() == Some(key))
-                    {
-                        let child = old_child.clone().update(new_child.clone());
-                        if old_pos != new_pos {
-                            // NOTE: this is "insert_after"
-                            // http://stackoverflow.com/questions/4793604/ddg#4793630
-                            node.insert_before(child.node().unwrap(), next_sibling.as_ref())
-                                .unwrap();
-                            log("relocate");
-                        }
-                        next_sibling = child.next_sibling();
-                        to_remove[old_pos] = false;
-                        child
-                    } else {
-                        let child = new_child.clone().create_dom();
-                        // NOTE: this is "insert_after"
-                        // http://stackoverflow.com/questions/4793604/ddg#4793630
-                        node.insert_before(child.node().unwrap(), next_sibling.as_ref())
-                            .unwrap();
-                        child
-                    }
-                } else if let Some(old_child) = children.get(new_pos) {
-                    let child = old_child.clone().update(new_child.clone());
-                    next_sibling = child.next_sibling();
-                    to_remove[new_pos] = false;
-                    child
-                } else {
-                    let child = new_child.clone().create_dom();
-                    node.append_child(child.node().unwrap()).unwrap();
-                    child
-                });
-            });
-
-        children
-            .iter()
-            .zip(to_remove.into_iter())
-            .for_each(|(child, to_remove)| {
-                if to_remove {
-                    if let Some(node) = child.node() {
-                        if let Some(parent) = node.parent_node() {
-                            log("remove node");
-                            parent.remove_child(node).unwrap();
-                        }
-                    }
-                }
-            });
+        let fragment = fragment.update(new_vnode.fragment);
 
         Self {
             tag,
             key: new_vnode.key,
             node: Some(node),
             dyn_attrs: new_vnode.dyn_attrs,
-            children: Rc::from(new_children),
+            fragment,
         }
     }
 
@@ -290,17 +256,29 @@ pub struct VNodeText {
 }
 
 impl VNodeText {
-    pub fn create_dom(self) -> Self {
+    pub fn create_dom(
+        self,
+        container: &web_sys::Node,
+        before_sibling: Option<&web_sys::Node>,
+    ) -> Self {
         if self.node.is_some() {
             return self;
         }
 
         log!("create text: {}", self.text);
         let node = document().create_text_node(&self.text);
+        container.insert_before(&node, before_sibling).unwrap();
         VNodeText {
             node: Some(node),
             ..self
         }
+    }
+
+    pub fn remove_dom(mut self) -> Self {
+        if let Some(node) = self.node.take() {
+            node.remove();
+        }
+        self
     }
 
     pub fn update(self, new_vnode: Self) -> Self {
@@ -328,7 +306,9 @@ impl VNodeText {
 #[derive(Clone)]
 pub struct VNodeFragment {
     key: Option<Key>,
-    node: Option<web_sys::DocumentFragment>,
+    fragment: web_sys::DocumentFragment,
+    container: Option<web_sys::Node>,
+    before_sibling: Option<web_sys::Node>,
     children: Vec<VNode>,
 }
 
@@ -340,29 +320,40 @@ impl VNodeFragment {
         }
     }
 
-    pub fn create_dom(self) -> Self {
+    pub fn create_dom(
+        self,
+        container: &web_sys::Node,
+        before_sibling: Option<&web_sys::Node>,
+    ) -> Self {
         let Self {
             key,
-            node: _,
+            fragment,
             children,
+            container: _,
+            before_sibling: _,
         } = self;
 
         log("create fragment");
-        let node = document().create_document_fragment();
         let children = children
             .into_iter()
-            .map(|child| {
-                let child = child.clone().create_dom();
-                node.append_child(child.node().unwrap()).unwrap();
-                child
-            })
+            .map(|child| child.clone().create_dom(&fragment, None))
             .collect();
+        container.insert_before(&fragment, before_sibling).unwrap();
 
         Self {
             key,
-            node: Some(node),
+            fragment,
             children,
+            container: Some(container.clone()),
+            before_sibling: before_sibling.cloned(),
         }
+    }
+
+    pub fn remove_dom(mut self) -> Self {
+        for child in self.children.iter_mut() {
+            *child = child.clone().remove_dom();
+        }
+        self
     }
 
     pub fn update(self, new_vnode: Self) -> Self {
@@ -372,17 +363,16 @@ impl VNodeFragment {
 
         let Self {
             key,
-            node: _,
+            fragment,
             children,
+            container,
+            before_sibling,
         } = self;
+        let container = container.unwrap();
 
         log("update fragment");
         let mut new_children: Vec<VNode> = Vec::with_capacity(new_vnode.children.len());
 
-        // TODO logic is identical to element's children. this should be generalized
-        let mut next_sibling = children[0].node().map(Clone::clone);
-        let node = next_sibling.as_ref().unwrap().parent_node().unwrap();
-        log!("first child is some: {:?}", next_sibling.is_some());
         let mut to_remove = vec![true; new_vnode.children.len()];
         new_vnode
             .children
@@ -395,34 +385,23 @@ impl VNodeFragment {
                         .enumerate()
                         .find(|(_, x)| x.key() == Some(key))
                     {
+                        fragment
+                            .insert_before(old_child.node().unwrap(), None)
+                            .unwrap();
                         let child = old_child.clone().update(new_child.clone());
-                        if old_pos != new_pos {
-                            // NOTE: this is "insert_after"
-                            // http://stackoverflow.com/questions/4793604/ddg#4793630
-                            node.insert_before(child.node().unwrap(), next_sibling.as_ref())
-                                .unwrap();
-                            log("relocate");
-                        }
-                        next_sibling = child.next_sibling();
                         to_remove[old_pos] = false;
                         child
                     } else {
-                        let child = new_child.clone().create_dom();
-                        // NOTE: this is "insert_after"
-                        // http://stackoverflow.com/questions/4793604/ddg#4793630
-                        node.insert_before(child.node().unwrap(), next_sibling.as_ref())
-                            .unwrap();
-                        child
+                        new_child.clone().create_dom(&fragment, None)
                     }
                 } else if let Some(old_child) = children.get(new_pos) {
-                    let child = old_child.clone().update(new_child.clone());
-                    next_sibling = child.next_sibling();
+                    fragment
+                        .insert_before(old_child.node().unwrap(), None)
+                        .unwrap();
                     to_remove[new_pos] = false;
-                    child
+                    old_child.clone().update(new_child.clone())
                 } else {
-                    let child = new_child.clone().create_dom();
-                    node.append_child(child.node().unwrap()).unwrap();
-                    child
+                    new_child.clone().create_dom(&fragment, None)
                 });
             });
 
@@ -441,15 +420,21 @@ impl VNodeFragment {
                 }
             });
 
+        container
+            .insert_before(&fragment, before_sibling.as_ref())
+            .unwrap();
+
         Self {
             key,
-            node: None,
+            fragment,
             children,
+            container: Some(container),
+            before_sibling,
         }
     }
 
-    pub fn node(&self) -> Option<&web_sys::Node> {
-        self.node.as_deref()
+    pub fn node(&self) -> &web_sys::Node {
+        self.fragment.unchecked_ref()
     }
 }
 
@@ -514,7 +499,13 @@ impl VNodeElementBuilder {
                     .into_iter()
                     .collect::<Vec<_>>(),
             ),
-            children: Rc::from(std::mem::take(&mut self.children)),
+            fragment: VNodeFragment {
+                key: None,
+                fragment: document().create_document_fragment(),
+                children: std::mem::take(&mut self.children),
+                container: None,
+                before_sibling: None,
+            },
         }))
     }
 }
@@ -542,8 +533,10 @@ impl VNodeFragmentBuilder {
     pub fn finish(&mut self) -> VNode {
         VNode::Fragment(Rc::new(VNodeFragment {
             key: self.key,
-            node: Default::default(),
+            fragment: document().create_document_fragment(),
             children: std::mem::take(&mut self.children),
+            container: None,
+            before_sibling: None,
         }))
     }
 }

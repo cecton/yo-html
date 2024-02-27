@@ -24,22 +24,21 @@ fn run_app() {
         }
 
         html! {
-            <div>
-            <p>{"Welcome"}</p>
+            <>
+            //<p>{"Welcome"}</p>
             <>{text1}<br/>{text2}{"!"}</>
             <ul>
             {stuff1}
             {stuff2}
             </ul>
-            </div>
+            </>
         }
     }
 
     let window = web_sys::window().unwrap();
     let document = window.document().unwrap();
     let body = document.body().unwrap();
-    let app = render("World", false).create_dom();
-    body.append_child(app.node().unwrap()).unwrap();
+    let app = render("World", false).create_dom(&body, None);
     let app = app.update(render("Q", true));
     drop(app);
 }
