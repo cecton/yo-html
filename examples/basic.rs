@@ -25,12 +25,14 @@ fn run_app() {
 
         html! {
             <>
-            //<p>{"Welcome"}</p>
+            <>{"Header"}</>
+            <br/>
             <>{text1}<br/>{text2}{"!"}</>
             <ul>
             {stuff1}
             {stuff2}
             </ul>
+            <>{"Footer"}</>
             </>
         }
     }
@@ -38,7 +40,8 @@ fn run_app() {
     let window = web_sys::window().unwrap();
     let document = window.document().unwrap();
     let body = document.body().unwrap();
-    let app = render("World", false).create_dom(&body, None);
+    let app = render("World", false).create_dom(&body);
     let app = app.update(render("Q", true));
+    let app = app.update(render("World", false));
     drop(app);
 }
