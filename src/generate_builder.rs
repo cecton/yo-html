@@ -111,13 +111,20 @@ impl HtmlElement {
                 let children = fragment
                     .children
                     .iter()
-                    .map(|x| x.generate_builder())
+                    .enumerate()
+                    .map(|(i, x)| {
+                        let children_count = if i == 0 { fragment.children.len() } else { 0 };
+                        let child = x.generate_builder();
+                        quote::quote_spanned! {child.span()=>
+                            .add_child(#child, #children_count)
+                        }
+                    })
                     .collect::<Vec<_>>();
 
                 quote::quote! {
-                    Fragment::from([
-                        #(#children,)*
-                    ])
+                    Fragment::builder()
+                        #(#children)*
+                        .finish()
                 }
             }
             Block(block) => quote_block(block),

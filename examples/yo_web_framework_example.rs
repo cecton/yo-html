@@ -17,13 +17,19 @@ extern "C" {
     pub fn log(message: &str);
 }
 
+macro_rules! log {
+    ($($tt:tt)+) => {{
+        log(&format!($($tt)*));
+    }};
+}
+
 type Key = u64;
 
 #[derive(Clone)]
 pub enum VNode {
     Element(Rc<VNodeElement>),
     Text(Rc<VNodeText>),
-    Fragment(Rc<[VNode]>),
+    Fragment(Rc<VNodeFragment>),
     Component(Rc<dyn Component>),
 }
 
@@ -62,15 +68,9 @@ impl From<std::fmt::Arguments<'_>> for VNode {
     }
 }
 
-impl<const N: usize> From<[VNode; N]> for VNode {
-    fn from(elements: [VNode; N]) -> VNode {
-        VNode::Fragment(elements.into())
-    }
-}
-
 impl VNode {
-    pub fn builder(tag: &'static str) -> VNodeBuilder {
-        VNodeBuilder {
+    pub fn builder(tag: &'static str) -> VNodeElementBuilder {
+        VNodeElementBuilder {
             tag,
             key: Default::default(),
             class: Default::default(),
@@ -79,31 +79,26 @@ impl VNode {
         }
     }
 
-    pub fn create_dom_element(self) -> Self {
+    pub fn create_dom(self) -> Self {
         match self {
-            Self::Element(x) => Self::Element(Rc::new(Rc::unwrap_or_clone(x).create_dom_element())),
-            Self::Text(x) => Self::Text(Rc::new(Rc::unwrap_or_clone(x).create_dom_element())),
-            Self::Fragment(x) => Self::Fragment(x),
+            Self::Element(x) => Self::Element(Rc::new(Rc::unwrap_or_clone(x).create_dom())),
+            Self::Text(x) => Self::Text(Rc::new(Rc::unwrap_or_clone(x).create_dom())),
+            Self::Fragment(x) => Self::Fragment(Rc::new(Rc::unwrap_or_clone(x).create_dom())),
             _ => todo!(),
         }
     }
 
-    pub fn update_dom_element(self, new_vnode: Self) -> Self {
+    pub fn update(self, new_vnode: Self) -> Self {
         match (self, new_vnode) {
             (Self::Element(a), Self::Element(b)) => Self::Element(Rc::new(
-                Rc::unwrap_or_clone(a).update_dom_element(Rc::unwrap_or_clone(b)),
+                Rc::unwrap_or_clone(a).update(Rc::unwrap_or_clone(b)),
             )),
             (Self::Text(a), Self::Text(b)) => Self::Text(Rc::new(
-                Rc::unwrap_or_clone(a).update_dom_element(Rc::unwrap_or_clone(b)),
+                Rc::unwrap_or_clone(a).update(Rc::unwrap_or_clone(b)),
             )),
-            _ => todo!(),
-        }
-    }
-
-    pub fn remove_dom_element(self) -> Self {
-        match self {
-            Self::Element(x) => Self::Element(Rc::new(Rc::unwrap_or_clone(x).remove_dom_element())),
-            Self::Text(x) => Self::Text(Rc::new(Rc::unwrap_or_clone(x).remove_dom_element())),
+            (Self::Fragment(a), Self::Fragment(b)) => Self::Fragment(Rc::new(
+                Rc::unwrap_or_clone(a).update(Rc::unwrap_or_clone(b)),
+            )),
             _ => todo!(),
         }
     }
@@ -112,8 +107,13 @@ impl VNode {
         match self {
             Self::Element(x) => x.node(),
             Self::Text(x) => x.node(),
+            Self::Fragment(x) => x.node(),
             _ => todo!(),
         }
+    }
+
+    pub fn next_sibling(&self) -> Option<web_sys::Node> {
+        self.node().and_then(|x| x.next_sibling())
     }
 
     pub fn key(&self) -> Option<Key> {
@@ -128,14 +128,14 @@ impl VNode {
 pub struct VNodeElement {
     tag: &'static str,
     key: Option<Key>,
-    element: Option<web_sys::Element>,
+    node: Option<web_sys::Element>,
     dyn_attrs: Rc<[(IString, IString)]>,
     children: Rc<[VNode]>,
 }
 
 impl VNodeElement {
-    pub fn create_dom_element(self) -> Self {
-        if self.element.is_some() {
+    pub fn create_dom(self) -> Self {
+        if self.node.is_some() {
             return self;
         }
 
@@ -146,51 +146,49 @@ impl VNodeElement {
             ..
         } = self;
 
-        log("create dom element");
-        let element = document().create_element(tag).unwrap();
+        log!("create element: {tag}");
+        let node = document().create_element(tag).unwrap();
         for (attr_name, attr_value) in dyn_attrs.iter() {
-            element.set_attribute(attr_name, attr_value).unwrap();
+            node.set_attribute(attr_name, attr_value).unwrap();
         }
         let children = children
             .iter()
             .map(|child| {
-                let child = child.clone().create_dom_element();
-                element
-                    .append_child(child.node().unwrap().unchecked_ref())
-                    .unwrap();
+                let child = child.clone().create_dom();
+                node.append_child(child.node().unwrap()).unwrap();
                 child
             })
             .collect();
 
         Self {
-            element: Some(element),
+            node: Some(node),
             dyn_attrs,
             children,
             ..self
         }
     }
 
-    pub fn update_dom_element(self, new_vnode: Self) -> Self {
-        if self.element.is_none() {
+    pub fn update(self, new_vnode: Self) -> Self {
+        if self.node.is_none() {
             return self;
         }
 
         let Self {
             tag,
             key: _,
-            element,
+            node,
             dyn_attrs,
             children,
         } = self;
-        let element = element.unwrap();
+        let node = node.unwrap();
 
-        log("update dom element");
+        log!("update element: {tag}");
         dyn_attrs
             .iter()
             .map(|(x, _)| x)
             .filter(|attr_name| !new_vnode.dyn_attrs.iter().any(|(x, _)| x == *attr_name))
             .for_each(|attr_name| {
-                element.remove_attribute(&attr_name).unwrap();
+                node.remove_attribute(&attr_name).unwrap();
             });
 
         new_vnode
@@ -204,13 +202,13 @@ impl VNodeElement {
                 }
             })
             .for_each(|(attr_name, attr_value)| {
-                element.set_attribute(attr_name, attr_value).unwrap();
+                node.set_attribute(attr_name, attr_value).unwrap();
             });
 
         let mut new_children: Vec<VNode> = Vec::with_capacity(new_vnode.children.len());
 
-        let mut next_sibling = element.first_child();
-        let mut to_remove = vec![true; new_children.capacity()];
+        let mut next_sibling = node.first_child();
+        let mut to_remove = vec![true; new_vnode.children.len()];
         new_vnode
             .children
             .iter()
@@ -222,35 +220,33 @@ impl VNodeElement {
                         .enumerate()
                         .find(|(_, x)| x.key() == Some(key))
                     {
-                        let child = old_child.clone().update_dom_element(new_child.clone());
+                        let child = old_child.clone().update(new_child.clone());
                         if old_pos != new_pos {
                             // NOTE: this is "insert_after"
                             // http://stackoverflow.com/questions/4793604/ddg#4793630
-                            element
-                                .insert_before(child.node().unwrap(), next_sibling.as_ref())
+                            node.insert_before(child.node().unwrap(), next_sibling.as_ref())
                                 .unwrap();
                             log("relocate");
                         }
-                        next_sibling = child.node().unwrap().next_sibling();
+                        next_sibling = child.next_sibling();
                         to_remove[old_pos] = false;
                         child
                     } else {
-                        let child = new_child.clone().create_dom_element();
+                        let child = new_child.clone().create_dom();
                         // NOTE: this is "insert_after"
                         // http://stackoverflow.com/questions/4793604/ddg#4793630
-                        element
-                            .insert_before(child.node().unwrap(), next_sibling.as_ref())
+                        node.insert_before(child.node().unwrap(), next_sibling.as_ref())
                             .unwrap();
                         child
                     }
                 } else if let Some(old_child) = children.get(new_pos) {
-                    let child = old_child.clone().update_dom_element(new_child.clone());
-                    next_sibling = child.node().unwrap().next_sibling();
+                    let child = old_child.clone().update(new_child.clone());
+                    next_sibling = child.next_sibling();
                     to_remove[new_pos] = false;
                     child
                 } else {
-                    let child = new_child.clone().create_dom_element();
-                    element.append_child(child.node().unwrap()).unwrap();
+                    let child = new_child.clone().create_dom();
+                    node.append_child(child.node().unwrap()).unwrap();
                     child
                 });
             });
@@ -260,29 +256,26 @@ impl VNodeElement {
             .zip(to_remove.into_iter())
             .for_each(|(child, to_remove)| {
                 if to_remove {
-                    child.clone().remove_dom_element();
+                    if let Some(node) = child.node() {
+                        if let Some(parent) = node.parent_node() {
+                            log("remove node");
+                            parent.remove_child(node).unwrap();
+                        }
+                    }
                 }
             });
 
         Self {
             tag,
             key: new_vnode.key,
-            element: Some(element),
+            node: Some(node),
             dyn_attrs: new_vnode.dyn_attrs,
             children: Rc::from(new_children),
         }
     }
 
-    pub fn remove_dom_element(mut self) -> Self {
-        if let Some(element) = self.element.take() {
-            log("remove dom element");
-            element.remove();
-        }
-        self
-    }
-
     pub fn node(&self) -> Option<&web_sys::Node> {
-        self.element.as_ref().map(|x| x.unchecked_ref())
+        self.node.as_deref()
     }
 
     pub fn key(&self) -> Option<Key> {
@@ -297,12 +290,12 @@ pub struct VNodeText {
 }
 
 impl VNodeText {
-    pub fn create_dom_element(self) -> Self {
+    pub fn create_dom(self) -> Self {
         if self.node.is_some() {
             return self;
         }
 
-        log("create dom text");
+        log!("create text: {}", self.text);
         let node = document().create_text_node(&self.text);
         VNodeText {
             node: Some(node),
@@ -310,10 +303,10 @@ impl VNodeText {
         }
     }
 
-    pub fn update_dom_element(self, new_vnode: Self) -> Self {
+    pub fn update(self, new_vnode: Self) -> Self {
         if let Some(node) = self.node {
             if self.text != new_vnode.text {
-                log("update dom text");
+                log!("update text: {} -> {}", self.text, new_vnode.text);
                 node.set_node_value(Some(&new_vnode.text));
             }
 
@@ -326,20 +319,141 @@ impl VNodeText {
         }
     }
 
-    pub fn remove_dom_element(mut self) -> Self {
-        if let Some(node) = self.node.take() {
-            log("remove dom text");
-            node.remove();
-        }
-        self
-    }
-
     pub fn node(&self) -> Option<&web_sys::Node> {
+        // TODO why this one cant use as_deref?
         self.node.as_ref().map(|x| x.unchecked_ref())
     }
 }
 
-pub struct VNodeBuilder {
+#[derive(Clone)]
+pub struct VNodeFragment {
+    key: Option<Key>,
+    node: Option<web_sys::DocumentFragment>,
+    children: Vec<VNode>,
+}
+
+impl VNodeFragment {
+    pub fn builder() -> VNodeFragmentBuilder {
+        VNodeFragmentBuilder {
+            key: Default::default(),
+            children: Default::default(),
+        }
+    }
+
+    pub fn create_dom(self) -> Self {
+        let Self {
+            key,
+            node: _,
+            children,
+        } = self;
+
+        log("create fragment");
+        let node = document().create_document_fragment();
+        let children = children
+            .into_iter()
+            .map(|child| {
+                let child = child.clone().create_dom();
+                node.append_child(child.node().unwrap()).unwrap();
+                child
+            })
+            .collect();
+
+        Self {
+            key,
+            node: Some(node),
+            children,
+        }
+    }
+
+    pub fn update(self, new_vnode: Self) -> Self {
+        if self.children.is_empty() {
+            return self;
+        }
+
+        let Self {
+            key,
+            node: _,
+            children,
+        } = self;
+
+        log("update fragment");
+        let mut new_children: Vec<VNode> = Vec::with_capacity(new_vnode.children.len());
+
+        // TODO logic is identical to element's children. this should be generalized
+        let mut next_sibling = children[0].node().map(Clone::clone);
+        let node = next_sibling.as_ref().unwrap().parent_node().unwrap();
+        log!("first child is some: {:?}", next_sibling.is_some());
+        let mut to_remove = vec![true; new_vnode.children.len()];
+        new_vnode
+            .children
+            .iter()
+            .enumerate()
+            .for_each(|(new_pos, new_child)| {
+                new_children.push(if let Some(key) = new_child.key() {
+                    if let Some((old_pos, old_child)) = children
+                        .iter()
+                        .enumerate()
+                        .find(|(_, x)| x.key() == Some(key))
+                    {
+                        let child = old_child.clone().update(new_child.clone());
+                        if old_pos != new_pos {
+                            // NOTE: this is "insert_after"
+                            // http://stackoverflow.com/questions/4793604/ddg#4793630
+                            node.insert_before(child.node().unwrap(), next_sibling.as_ref())
+                                .unwrap();
+                            log("relocate");
+                        }
+                        next_sibling = child.next_sibling();
+                        to_remove[old_pos] = false;
+                        child
+                    } else {
+                        let child = new_child.clone().create_dom();
+                        // NOTE: this is "insert_after"
+                        // http://stackoverflow.com/questions/4793604/ddg#4793630
+                        node.insert_before(child.node().unwrap(), next_sibling.as_ref())
+                            .unwrap();
+                        child
+                    }
+                } else if let Some(old_child) = children.get(new_pos) {
+                    let child = old_child.clone().update(new_child.clone());
+                    next_sibling = child.next_sibling();
+                    to_remove[new_pos] = false;
+                    child
+                } else {
+                    let child = new_child.clone().create_dom();
+                    node.append_child(child.node().unwrap()).unwrap();
+                    child
+                });
+            });
+
+        children
+            .iter()
+            .zip(to_remove.into_iter())
+            .for_each(|(child, to_remove)| {
+                if to_remove {
+                    // TODO things should be removed recursively because of the fragments
+                    if let Some(node) = child.node() {
+                        if let Some(parent) = node.parent_node() {
+                            log("remove node");
+                            parent.remove_child(node).unwrap();
+                        }
+                    }
+                }
+            });
+
+        Self {
+            key,
+            node: None,
+            children,
+        }
+    }
+
+    pub fn node(&self) -> Option<&web_sys::Node> {
+        self.node.as_deref()
+    }
+}
+
+pub struct VNodeElementBuilder {
     tag: &'static str,
     key: Option<Key>,
     class: Vec<IString>,
@@ -347,7 +461,7 @@ pub struct VNodeBuilder {
     children: Vec<VNode>,
 }
 
-impl VNodeBuilder {
+impl VNodeElementBuilder {
     pub fn set_attr_key(&mut self, key: impl std::hash::Hash) -> &mut Self {
         use std::hash::Hasher;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -394,13 +508,42 @@ impl VNodeBuilder {
         VNode::Element(Rc::new(VNodeElement {
             tag: self.tag,
             key: self.key,
-            element: Default::default(),
+            node: Default::default(),
             dyn_attrs: Rc::from(
                 std::mem::take(&mut self.dyn_attrs)
                     .into_iter()
                     .collect::<Vec<_>>(),
             ),
             children: Rc::from(std::mem::take(&mut self.children)),
+        }))
+    }
+}
+
+pub struct VNodeFragmentBuilder {
+    key: Option<Key>,
+    children: Vec<VNode>,
+}
+
+impl VNodeFragmentBuilder {
+    pub fn set_attr_key(&mut self, key: impl std::hash::Hash) -> &mut Self {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        self.key.replace(hasher.finish().into());
+        self
+    }
+
+    pub fn add_child(&mut self, vnode: impl Into<VNode>, additional: usize) -> &mut Self {
+        self.children.reserve_exact(additional);
+        self.children.push(vnode.into());
+        self
+    }
+
+    pub fn finish(&mut self) -> VNode {
+        VNode::Fragment(Rc::new(VNodeFragment {
+            key: self.key,
+            node: Default::default(),
+            children: std::mem::take(&mut self.children),
         }))
     }
 }
@@ -451,8 +594,9 @@ pub mod html_context {
     pub type ul = super::VNode;
     pub type li = super::VNode;
     pub type br = super::VNode;
+    pub type p = super::VNode;
     pub type Text = super::VNode;
-    pub type Fragment = super::VNode;
+    pub type Fragment = super::VNodeFragment;
     pub use super::MyComponent;
 }
 
