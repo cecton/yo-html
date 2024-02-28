@@ -101,7 +101,7 @@ impl VNode {
         }
     }
 
-    pub fn update(self, new_vnode: Self) -> Self {
+    pub fn update(self, new_vnode: Self, container: &web_sys::Node) -> Self {
         match (self, new_vnode) {
             (Self::Element(a), Self::Element(b)) => Self::Element(Rc::new(
                 Rc::unwrap_or_clone(a).update(Rc::unwrap_or_clone(b)),
@@ -112,7 +112,10 @@ impl VNode {
             (Self::Fragment(a), Self::Fragment(b)) => Self::Fragment(Rc::new(
                 Rc::unwrap_or_clone(a).update(Rc::unwrap_or_clone(b)),
             )),
-            _ => todo!(),
+            (a, b) => {
+                a.remove_dom();
+                b.create_dom(container)
+            }
         }
     }
 
@@ -123,10 +126,6 @@ impl VNode {
             Self::Fragment(x) => Some(x.node()),
             _ => todo!(),
         }
-    }
-
-    pub fn next_sibling(&self) -> Option<web_sys::Node> {
-        self.node().and_then(|x| x.next_sibling())
     }
 
     pub fn key(&self) -> Option<Key> {
@@ -354,7 +353,7 @@ impl VNodeFragment {
         let mut to_remove = vec![true; new_vnode.children.len()];
         new_vnode
             .children
-            .iter()
+            .into_iter()
             .enumerate()
             .for_each(|(new_pos, new_child)| {
                 new_children.push(if let Some(key) = new_child.key() {
@@ -364,18 +363,17 @@ impl VNodeFragment {
                         .find(|(_, x)| x.key() == Some(key))
                     {
                         fragment.append_child(old_child.node().unwrap()).unwrap();
-                        let child = old_child.clone().update(new_child.clone());
                         to_remove[old_pos] = false;
-                        child
+                        old_child.clone().update(new_child, &fragment)
                     } else {
-                        new_child.clone().create_dom(&fragment)
+                        new_child.create_dom(&fragment)
                     }
                 } else if let Some(old_child) = old_children.get(new_pos) {
                     fragment.append_child(old_child.node().unwrap()).unwrap();
                     to_remove[new_pos] = false;
-                    old_child.clone().update(new_child.clone())
+                    old_child.clone().update(new_child, &fragment)
                 } else {
-                    new_child.clone().create_dom(&fragment)
+                    new_child.create_dom(&fragment)
                 });
             });
 

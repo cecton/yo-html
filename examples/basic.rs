@@ -41,7 +41,7 @@ fn run_app() {
     let document = window.document().unwrap();
     let body = document.body().unwrap();
     let app = render("World", false).create_dom(&body);
-    let app = app.update(render("Q", true));
-    let app = app.update(render("World", false));
+    let app = app.update(render("Q", true), &body);
+    let app = app.update(render("World", false), &body);
     drop(app);
 }
