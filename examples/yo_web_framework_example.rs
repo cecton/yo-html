@@ -30,10 +30,24 @@ pub enum VNode {
     Element(Rc<VNodeElement>),
     Text(Rc<VNodeText>),
     Fragment(Rc<VNodeFragment>),
-    Component(Rc<dyn Component>),
+    Component(Rc<dyn Component>, Box<VNode>),
 }
 
 impl implicit_clone::ImplicitClone for VNode {}
+
+impl Default for VNode {
+    fn default() -> Self {
+        thread_local! {
+            static DEFAULT_VALUE: Rc<VNodeFragment> = Rc::new(VNodeFragment {
+                key: None,
+                fragment: document().create_document_fragment(),
+                children: Default::default(),
+                container: None,
+            });
+        }
+        DEFAULT_VALUE.with(|x| Self::Fragment(x.clone()))
+    }
+}
 
 impl From<IString> for VNode {
     fn from(text: IString) -> VNode {
@@ -68,6 +82,12 @@ impl From<std::fmt::Arguments<'_>> for VNode {
     }
 }
 
+impl<T: Component + 'static> From<T> for VNode {
+    fn from(component: T) -> VNode {
+        VNode::Component(Rc::new(component), Default::default())
+    }
+}
+
 impl VNode {
     pub fn builder(tag: &'static str) -> VNodeElementBuilder {
         VNodeElementBuilder {
@@ -88,7 +108,10 @@ impl VNode {
             Self::Fragment(x) => {
                 Self::Fragment(Rc::new(Rc::unwrap_or_clone(x).create_dom(container)))
             }
-            _ => todo!(),
+            Self::Component(component, _) => {
+                let vnode = component.render().create_dom(container);
+                Self::Component(component, Box::new(vnode))
+            }
         }
     }
 
@@ -97,7 +120,9 @@ impl VNode {
             Self::Element(x) => Self::Element(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
             Self::Text(x) => Self::Text(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
             Self::Fragment(x) => Self::Fragment(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
-            _ => todo!(),
+            Self::Component(component, vnode) => {
+                Self::Component(component, Box::new(vnode.remove_dom()))
+            }
         }
     }
 
@@ -112,6 +137,10 @@ impl VNode {
             (Self::Fragment(a), Self::Fragment(b)) => Self::Fragment(Rc::new(
                 Rc::unwrap_or_clone(a).update(Rc::unwrap_or_clone(b)),
             )),
+            (Self::Component(_comp_a, vnode_a), Self::Component(comp_b, _vnode_b)) => {
+                let vnode_b = comp_b.render();
+                Self::Component(comp_b, Box::new(vnode_a.update(vnode_b, container)))
+            }
             (a, b) => {
                 a.remove_dom();
                 b.create_dom(container)
@@ -124,7 +153,7 @@ impl VNode {
             Self::Element(x) => x.node(),
             Self::Text(x) => x.node(),
             Self::Fragment(x) => Some(x.node()),
-            _ => todo!(),
+            Self::Component(_, vnode) => vnode.node(),
         }
     }
 
@@ -502,42 +531,8 @@ impl VNodeFragmentBuilder {
     }
 }
 
-pub trait Component {}
-
-pub struct MyComponent<T = ()> {
-    phantom: std::marker::PhantomData<T>,
-}
-
-impl<T> MyComponent<T> {
-    pub fn builder(_tag: &'static str) -> MyComponentBuilder<T> {
-        MyComponentBuilder {
-            phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-pub struct MyComponentBuilder<T> {
-    phantom: std::marker::PhantomData<T>,
-}
-
-impl<T> MyComponentBuilder<T> {
-    pub fn finish(&mut self) -> MyComponentProps<T> {
-        MyComponentProps {
-            phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-pub struct MyComponentProps<T> {
-    phantom: std::marker::PhantomData<T>,
-}
-
-impl<T> Component for MyComponentProps<T> {}
-
-impl<T: 'static> From<MyComponentProps<T>> for VNode {
-    fn from(component: MyComponentProps<T>) -> VNode {
-        VNode::Component(Rc::new(component))
-    }
+pub trait Component {
+    fn render(&self) -> VNode;
 }
 
 #[doc(hidden)]
@@ -551,12 +546,12 @@ pub mod html_context {
     pub type p = super::VNode;
     pub type Text = super::VNode;
     pub type Fragment = super::VNodeFragment;
-    pub use super::MyComponent;
 }
 
 pub mod prelude {
     pub use super::html_context;
     pub use super::log;
+    pub use super::Component;
     pub use super::VNode;
     pub use implicit_clone::unsync::*;
     pub use yo_html::html;

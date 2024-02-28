@@ -6,6 +6,42 @@ fn run_app() {
 
     log("Hello World!");
 
+    pub struct MyComponent<T = ()> {
+        phantom: std::marker::PhantomData<T>,
+    }
+
+    impl<T> MyComponent<T> {
+        pub fn builder(_tag: &'static str) -> MyComponentBuilder<T> {
+            MyComponentBuilder {
+                phantom: std::marker::PhantomData,
+            }
+        }
+    }
+
+    pub struct MyComponentBuilder<T> {
+        phantom: std::marker::PhantomData<T>,
+    }
+
+    impl<T> MyComponentBuilder<T> {
+        pub fn finish(&mut self) -> MyComponentProps<T> {
+            MyComponentProps {
+                phantom: std::marker::PhantomData,
+            }
+        }
+    }
+
+    pub struct MyComponentProps<T> {
+        phantom: std::marker::PhantomData<T>,
+    }
+
+    impl<T> Component for MyComponentProps<T> {
+        fn render(&self) -> VNode {
+            html! {
+                <p>{"My component"}</p>
+            }
+        }
+    }
+
     fn render(name: impl Into<IString>, swap: bool) -> VNode {
         let mut text1 = html! { <span key="hello" style="font-weight: bold;">{"Hello"}</span> };
         let mut text2 = html! { <span key="name">{name.into()}</span> };
@@ -32,6 +68,7 @@ fn run_app() {
             {stuff1}
             {stuff2}
             </ul>
+            <MyComponent />
             <>{"Footer"}</>
             </>
         }
