@@ -22,7 +22,7 @@ fn run_app() {
         }
     }
 
-    #[derive(PartialEq)]
+    #[derive(PartialEq, Clone)]
     pub struct MyComponent<T = ()> {
         value: T,
     }

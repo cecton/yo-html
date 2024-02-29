@@ -1,5 +1,6 @@
 use implicit_clone::unsync::*;
 use std::any::*;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::*;
 use wasm_bindgen::prelude::*;
@@ -599,7 +600,7 @@ impl VNodeFragmentBuilder {
 }
 
 pub trait Component: AsAnyRc {
-    fn update(self: Rc<Self>, other: Rc<dyn Component>) -> bool;
+    fn update(&self, other: Rc<dyn Component>) -> bool;
     fn render(&self) -> VNode;
 }
 
@@ -622,23 +623,30 @@ pub trait PureComponent {
 
 #[derive(Clone)]
 pub struct VNodePureComponent<T: PureComponent> {
-    component: T,
+    component: RefCell<T>,
 }
 
 impl<T: PureComponent + 'static> VNodePureComponent<T> {
     pub fn new(component: T) -> Self {
-        Self { component }
+        Self {
+            component: RefCell::new(component),
+        }
     }
 }
 
-impl<T: PureComponent + PartialEq + 'static> Component for VNodePureComponent<T> {
-    fn update(self: Rc<Self>, other: Rc<dyn Component>) -> bool {
+impl<T: PureComponent + Clone + PartialEq + 'static> Component for VNodePureComponent<T> {
+    fn update(&self, other: Rc<dyn Component>) -> bool {
         let other: Rc<Self> = Rc::downcast(other.as_any_rc()).unwrap();
-        self.component != other.component
+        if self.component != other.component {
+            self.component.replace(other.component.borrow().clone());
+            true
+        } else {
+            false
+        }
     }
 
     fn render(&self) -> VNode {
-        self.component.render()
+        self.component.borrow().render()
     }
 }
 
