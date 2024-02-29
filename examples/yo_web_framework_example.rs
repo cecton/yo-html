@@ -217,6 +217,7 @@ pub struct VNodeElement {
     tag: &'static str,
     key: Option<Key>,
     node: Option<web_sys::Element>,
+    class: IArray<IString>,
     dyn_attrs: Rc<[(IString, IString)]>,
     fragment: VNodeFragment,
 }
@@ -229,6 +230,7 @@ impl VNodeElement {
 
         let Self {
             tag,
+            class,
             dyn_attrs,
             fragment,
             ..
@@ -236,6 +238,7 @@ impl VNodeElement {
 
         log!("create element: {tag}");
         let node = document().create_element(tag).unwrap();
+        Self::set_class(&node, &class);
         for (attr_name, attr_value) in dyn_attrs.iter() {
             node.set_attribute(attr_name, attr_value).unwrap();
         }
@@ -244,6 +247,7 @@ impl VNodeElement {
 
         Self {
             node: Some(node),
+            class,
             dyn_attrs,
             fragment,
             ..self
@@ -266,12 +270,16 @@ impl VNodeElement {
             tag,
             key: _,
             node,
+            class,
             dyn_attrs,
             fragment,
         } = self;
         let node = node.unwrap();
 
         log!("update element: {tag}");
+        if class != new_vnode.class {
+            Self::set_class(&node, &new_vnode.class);
+        }
         dyn_attrs
             .iter()
             .map(|(x, _)| x)
@@ -300,6 +308,7 @@ impl VNodeElement {
             tag,
             key: new_vnode.key,
             node: Some(node),
+            class: new_vnode.class,
             dyn_attrs: new_vnode.dyn_attrs,
             fragment,
         }
@@ -311,6 +320,18 @@ impl VNodeElement {
 
     pub fn key(&self) -> Option<Key> {
         self.key
+    }
+
+    pub fn set_class(node: &web_sys::Element, class: &[IString]) {
+        let mut it = class.iter();
+        if let Some(first_class) = it.next() {
+            let mut class = first_class.to_string();
+            it.for_each(|x| {
+                class.push(' ');
+                class.push_str(x);
+            });
+            node.set_attribute("class", &class).unwrap();
+        }
     }
 }
 
@@ -531,6 +552,7 @@ impl VNodeElementBuilder {
             tag: self.tag,
             key: self.key,
             node: Default::default(),
+            class: IArray::from(std::mem::take(&mut self.class)),
             dyn_attrs: Rc::from(
                 std::mem::take(&mut self.dyn_attrs)
                     .into_iter()
