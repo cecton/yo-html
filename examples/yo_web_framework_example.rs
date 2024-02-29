@@ -1,6 +1,7 @@
 use implicit_clone::unsync::*;
+use std::any::*;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::*;
 use wasm_bindgen::prelude::*;
 
 fn window() -> web_sys::Window {
@@ -17,6 +18,7 @@ extern "C" {
     pub fn log(message: &str);
 }
 
+#[macro_export]
 macro_rules! log {
     ($($tt:tt)+) => {{
         log(&format!($($tt)*));
@@ -30,7 +32,11 @@ pub enum VNode {
     Element(Rc<VNodeElement>),
     Text(Rc<VNodeText>),
     Fragment(Rc<VNodeFragment>),
-    Component(Rc<dyn Component>, Box<VNode>),
+    Component {
+        component: Rc<dyn Component>,
+        type_id: TypeId,
+        vnode: Box<VNode>,
+    },
 }
 
 impl implicit_clone::ImplicitClone for VNode {}
@@ -84,7 +90,11 @@ impl From<std::fmt::Arguments<'_>> for VNode {
 
 impl<T: Component + 'static> From<T> for VNode {
     fn from(component: T) -> VNode {
-        VNode::Component(Rc::new(component), Default::default())
+        VNode::Component {
+            component: Rc::new(component),
+            type_id: TypeId::of::<T>(),
+            vnode: Default::default(),
+        }
     }
 }
 
@@ -108,9 +118,17 @@ impl VNode {
             Self::Fragment(x) => {
                 Self::Fragment(Rc::new(Rc::unwrap_or_clone(x).create_dom(container)))
             }
-            Self::Component(component, _) => {
-                let vnode = component.render().create_dom(container);
-                Self::Component(component, Box::new(vnode))
+            Self::Component {
+                component,
+                type_id,
+                vnode: _,
+            } => {
+                let vnode = component.clone().render().create_dom(container);
+                Self::Component {
+                    component,
+                    type_id,
+                    vnode: Box::new(vnode),
+                }
             }
         }
     }
@@ -120,9 +138,15 @@ impl VNode {
             Self::Element(x) => Self::Element(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
             Self::Text(x) => Self::Text(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
             Self::Fragment(x) => Self::Fragment(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
-            Self::Component(component, vnode) => {
-                Self::Component(component, Box::new(vnode.remove_dom()))
-            }
+            Self::Component {
+                component,
+                type_id,
+                vnode,
+            } => Self::Component {
+                component,
+                type_id,
+                vnode: Box::new(vnode.remove_dom()),
+            },
         }
     }
 
@@ -137,9 +161,32 @@ impl VNode {
             (Self::Fragment(a), Self::Fragment(b)) => Self::Fragment(Rc::new(
                 Rc::unwrap_or_clone(a).update(Rc::unwrap_or_clone(b)),
             )),
-            (Self::Component(_comp_a, vnode_a), Self::Component(comp_b, _vnode_b)) => {
-                let vnode_b = comp_b.render();
-                Self::Component(comp_b, Box::new(vnode_a.update(vnode_b, container)))
+            (
+                Self::Component {
+                    component,
+                    type_id,
+                    vnode,
+                },
+                Self::Component {
+                    component: comp_b,
+                    type_id: type_id_b,
+                    vnode: _,
+                },
+            ) if type_id_b == type_id => {
+                if component.clone().update(comp_b) {
+                    let vnode = component.render();
+                    Self::Component {
+                        component,
+                        type_id,
+                        vnode: Box::new(vnode),
+                    }
+                } else {
+                    Self::Component {
+                        component,
+                        type_id,
+                        vnode,
+                    }
+                }
             }
             (a, b) => {
                 a.remove_dom();
@@ -153,7 +200,7 @@ impl VNode {
             Self::Element(x) => x.node(),
             Self::Text(x) => x.node(),
             Self::Fragment(x) => Some(x.node()),
-            Self::Component(_, vnode) => vnode.node(),
+            Self::Component { vnode, .. } => vnode.node(),
         }
     }
 
@@ -357,9 +404,7 @@ impl VNodeFragment {
     }
 
     pub fn remove_dom(mut self) -> Self {
-        for child in self.children.iter_mut() {
-            *child = child.clone().remove_dom();
-        }
+        self.children = self.children.into_iter().map(|x| x.remove_dom()).collect();
         self
     }
 
@@ -398,7 +443,7 @@ impl VNodeFragment {
                         new_child.create_dom(&fragment)
                     }
                 } else if let Some(old_child) = old_children.get(new_pos) {
-                    fragment.append_child(old_child.node().unwrap()).unwrap();
+                    fragment.append_child(old_child.node().expect("1")).unwrap();
                     to_remove[new_pos] = false;
                     old_child.clone().update(new_child, &fragment)
                 } else {
@@ -531,8 +576,48 @@ impl VNodeFragmentBuilder {
     }
 }
 
-pub trait Component {
+pub trait Component: AsAnyRc {
+    fn update(self: Rc<Self>, other: Rc<dyn Component>) -> bool;
     fn render(&self) -> VNode;
+}
+
+pub trait AsAnyRc {
+    fn as_any_rc(self: Rc<Self>) -> Rc<dyn Any>;
+}
+
+impl<T: 'static> AsAnyRc for T {
+    fn as_any_rc(self: Rc<Self>) -> Rc<dyn Any>
+    where
+        Self: Sized,
+    {
+        self
+    }
+}
+
+pub trait PureComponent {
+    fn render(&self) -> VNode;
+}
+
+#[derive(Clone)]
+pub struct VNodePureComponent<T: PureComponent> {
+    component: T,
+}
+
+impl<T: PureComponent + 'static> VNodePureComponent<T> {
+    pub fn new(component: T) -> Self {
+        Self { component }
+    }
+}
+
+impl<T: PureComponent + PartialEq + 'static> Component for VNodePureComponent<T> {
+    fn update(self: Rc<Self>, other: Rc<dyn Component>) -> bool {
+        let other: Rc<Self> = Rc::downcast(other.as_any_rc()).unwrap();
+        self.component != other.component
+    }
+
+    fn render(&self) -> VNode {
+        self.component.render()
+    }
 }
 
 #[doc(hidden)]
@@ -551,8 +636,11 @@ pub mod html_context {
 pub mod prelude {
     pub use super::html_context;
     pub use super::log;
+    pub use super::AsAnyRc;
     pub use super::Component;
+    pub use super::PureComponent;
     pub use super::VNode;
+    pub use super::VNodePureComponent;
     pub use implicit_clone::unsync::*;
     pub use yo_html::html;
 }

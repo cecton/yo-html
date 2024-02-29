@@ -6,35 +6,34 @@ fn run_app() {
 
     log("Hello World!");
 
+    pub struct MyComponentBuilder<T> {
+        value: Option<T>,
+    }
+
+    impl<T: 'static> MyComponentBuilder<T> {
+        pub fn set_attr_value(&mut self, value: T) -> &mut Self {
+            self.value.replace(value.into());
+            self
+        }
+        pub fn finish(&mut self) -> VNodePureComponent<MyComponent<T>> {
+            VNodePureComponent::new(MyComponent {
+                value: self.value.take().expect("missing property value"),
+            })
+        }
+    }
+
+    #[derive(PartialEq)]
     pub struct MyComponent<T = ()> {
-        phantom: std::marker::PhantomData<T>,
+        value: T,
     }
 
     impl<T> MyComponent<T> {
         pub fn builder(_tag: &'static str) -> MyComponentBuilder<T> {
-            MyComponentBuilder {
-                phantom: std::marker::PhantomData,
-            }
+            MyComponentBuilder { value: None }
         }
     }
 
-    pub struct MyComponentBuilder<T> {
-        phantom: std::marker::PhantomData<T>,
-    }
-
-    impl<T> MyComponentBuilder<T> {
-        pub fn finish(&mut self) -> MyComponentProps<T> {
-            MyComponentProps {
-                phantom: std::marker::PhantomData,
-            }
-        }
-    }
-
-    pub struct MyComponentProps<T> {
-        phantom: std::marker::PhantomData<T>,
-    }
-
-    impl<T> Component for MyComponentProps<T> {
+    impl<T> PureComponent for MyComponent<T> {
         fn render(&self) -> VNode {
             html! {
                 <p>{"My component"}</p>
@@ -68,7 +67,7 @@ fn run_app() {
             {stuff1}
             {stuff2}
             </ul>
-            <MyComponent />
+            <MyComponent<u32> value=42 />
             <>{"Footer"}</>
             </>
         }
