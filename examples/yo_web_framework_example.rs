@@ -637,8 +637,9 @@ impl<T: PureComponent + 'static> VNodePureComponent<T> {
 impl<T: PureComponent + Clone + PartialEq + 'static> Component for VNodePureComponent<T> {
     fn update(&self, other: Rc<dyn Component>) -> bool {
         let other: Rc<Self> = Rc::downcast(other.as_any_rc()).unwrap();
+        let other = Rc::unwrap_or_clone(other);
         if self.component != other.component {
-            self.component.replace(other.component.borrow().clone());
+            self.component.replace(other.component.into_inner());
             true
         } else {
             false
