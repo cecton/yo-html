@@ -175,7 +175,7 @@ impl VNode {
                 },
             ) if type_id_b == type_id => {
                 if component.clone().update(comp_b) {
-                    let vnode = component.render();
+                    let vnode = vnode.update(component.render(), container);
                     Self::Component {
                         component,
                         type_id,
