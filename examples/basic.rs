@@ -150,9 +150,5 @@ fn run_app() {
     let body = document.body().unwrap();
     let app = render("World", false).create_dom(&body);
     let app = app.update(render("Q", true));
-    let app = app.update(render("World", false));
-    thread_local! {
-        static APP: std::cell::RefCell<VNode> = Default::default();
-    }
-    APP.replace(app);
+    let _ = app.update(render("World", false));
 }

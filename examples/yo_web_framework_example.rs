@@ -759,7 +759,6 @@ impl<T: StatefulComponent + Clone + 'static> Component for VNodeStatefulComponen
     }
 
     fn render(&self, vnode_comp: Rc<VNodeComponent>) -> VNode {
-        let vnode_comp = Rc::downgrade(&vnode_comp);
         self.component.borrow().render(StatefulComponentHandler {
             vnode_comp,
             phantom: std::marker::PhantomData,
@@ -769,16 +768,15 @@ impl<T: StatefulComponent + Clone + 'static> Component for VNodeStatefulComponen
 
 #[derive(Clone)]
 pub struct StatefulComponentHandler<C> {
-    vnode_comp: Weak<VNodeComponent>,
+    vnode_comp: Rc<VNodeComponent>,
     phantom: std::marker::PhantomData<C>,
 }
 
 impl<C: StatefulComponent + 'static> StatefulComponentHandler<C> {
     pub fn update(&self) {
-        let vnode_comp = self.vnode_comp.upgrade().unwrap();
-        let new_vnode = vnode_comp.component.render(vnode_comp.clone());
+        let new_vnode = self.vnode_comp.component.render(self.vnode_comp.clone());
         assert!(matches!(new_vnode, VNode::Element(_)));
-        let this = &vnode_comp;
+        let this = &self.vnode_comp;
         assert!(new_vnode.node().is_none());
         assert!(this.vnode.borrow().node().is_some());
         assert!(this.vnode.borrow().container().is_some());
@@ -787,9 +785,8 @@ impl<C: StatefulComponent + 'static> StatefulComponentHandler<C> {
     }
 
     pub fn with_state<T: Default + 'static, R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        let vnode_comp = self.vnode_comp.upgrade().unwrap();
         let component: Rc<VNodeStatefulComponent<C>> =
-            Rc::downcast(vnode_comp.component.clone().as_any_rc()).unwrap();
+            Rc::downcast(self.vnode_comp.component.clone().as_any_rc()).unwrap();
         let mut guard = component.state.borrow_mut();
         let state = guard
             .entry(TypeId::of::<T>())
