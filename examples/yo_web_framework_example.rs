@@ -33,11 +33,7 @@ pub enum VNode {
     Element(Rc<VNodeElement>),
     Text(Rc<VNodeText>),
     Fragment(Rc<VNodeFragment>),
-    Component {
-        component: Rc<dyn Component>,
-        type_id: TypeId,
-        vnode: Box<VNode>,
-    },
+    Component(Rc<VNodeComponent>),
 }
 
 impl implicit_clone::ImplicitClone for VNode {}
@@ -58,7 +54,11 @@ impl Default for VNode {
 
 impl From<IString> for VNode {
     fn from(text: IString) -> VNode {
-        VNode::Text(Rc::new(VNodeText { text, node: None }))
+        VNode::Text(Rc::new(VNodeText {
+            text,
+            node: None,
+            container: None,
+        }))
     }
 }
 
@@ -67,6 +67,7 @@ impl From<String> for VNode {
         VNode::Text(Rc::new(VNodeText {
             text: s.into(),
             node: None,
+            container: None,
         }))
     }
 }
@@ -76,6 +77,7 @@ impl From<&'static str> for VNode {
         VNode::Text(Rc::new(VNodeText {
             text: s.into(),
             node: None,
+            container: None,
         }))
     }
 }
@@ -85,17 +87,18 @@ impl From<std::fmt::Arguments<'_>> for VNode {
         VNode::Text(Rc::new(VNodeText {
             text: args.into(),
             node: None,
+            container: None,
         }))
     }
 }
 
 impl<T: Component + 'static> From<T> for VNode {
     fn from(component: T) -> VNode {
-        VNode::Component {
+        VNode::Component(Rc::new(VNodeComponent {
             component: Rc::new(component),
             type_id: TypeId::of::<T>(),
             vnode: Default::default(),
-        }
+        }))
     }
 }
 
@@ -107,6 +110,7 @@ impl VNode {
             class: Default::default(),
             dyn_attrs: Default::default(),
             children: Default::default(),
+            handlers: Default::default(),
         }
     }
 
@@ -119,18 +123,7 @@ impl VNode {
             Self::Fragment(x) => {
                 Self::Fragment(Rc::new(Rc::unwrap_or_clone(x).create_dom(container)))
             }
-            Self::Component {
-                component,
-                type_id,
-                vnode: _,
-            } => {
-                let vnode = component.clone().render().create_dom(container);
-                Self::Component {
-                    component,
-                    type_id,
-                    vnode: Box::new(vnode),
-                }
-            }
+            Self::Component(x) => Self::Component(x.create_dom(container)),
         }
     }
 
@@ -139,19 +132,11 @@ impl VNode {
             Self::Element(x) => Self::Element(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
             Self::Text(x) => Self::Text(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
             Self::Fragment(x) => Self::Fragment(Rc::new(Rc::unwrap_or_clone(x).remove_dom())),
-            Self::Component {
-                component,
-                type_id,
-                vnode,
-            } => Self::Component {
-                component,
-                type_id,
-                vnode: Box::new(vnode.remove_dom()),
-            },
+            Self::Component(x) => Self::Component(x.remove_dom()),
         }
     }
 
-    pub fn update(self, new_vnode: Self, container: &web_sys::Node) -> Self {
+    pub fn update(self, new_vnode: Self) -> Self {
         match (self, new_vnode) {
             (Self::Element(a), Self::Element(b)) => Self::Element(Rc::new(
                 Rc::unwrap_or_clone(a).update(Rc::unwrap_or_clone(b)),
@@ -162,46 +147,19 @@ impl VNode {
             (Self::Fragment(a), Self::Fragment(b)) => Self::Fragment(Rc::new(
                 Rc::unwrap_or_clone(a).update(Rc::unwrap_or_clone(b)),
             )),
-            (
-                Self::Component {
-                    component,
-                    type_id,
-                    vnode,
-                },
-                Self::Component {
-                    component: comp_b,
-                    type_id: type_id_b,
-                    vnode: _,
-                },
-            ) if type_id_b == type_id => {
-                if component.clone().update(comp_b) {
-                    let vnode = vnode.update(component.render(), container);
-                    Self::Component {
-                        component,
-                        type_id,
-                        vnode: Box::new(vnode),
-                    }
-                } else {
-                    Self::Component {
-                        component,
-                        type_id,
-                        vnode,
-                    }
-                }
+            (Self::Component(a), Self::Component(b)) if a.type_id == b.type_id => {
+                Self::Component(a.update(Rc::unwrap_or_clone(b)))
             }
-            (a, b) => {
-                a.remove_dom();
-                b.create_dom(container)
-            }
+            (a, b) => b.create_dom(&a.remove_dom().container().unwrap()),
         }
     }
 
-    pub fn node(&self) -> Option<&web_sys::Node> {
+    pub fn node(&self) -> Option<web_sys::Node> {
         match self {
             Self::Element(x) => x.node(),
             Self::Text(x) => x.node(),
             Self::Fragment(x) => Some(x.node()),
-            Self::Component { vnode, .. } => vnode.node(),
+            Self::Component(x) => x.node(),
         }
     }
 
@@ -209,6 +167,15 @@ impl VNode {
         match self {
             Self::Element(x) => x.key(),
             _ => None,
+        }
+    }
+
+    pub fn container(&self) -> Option<web_sys::Node> {
+        match self {
+            Self::Element(x) => x.container(),
+            Self::Text(x) => x.container(),
+            Self::Fragment(x) => x.container(),
+            Self::Component(x) => x.container(),
         }
     }
 }
@@ -221,6 +188,8 @@ pub struct VNodeElement {
     class: IArray<IString>,
     dyn_attrs: Rc<[(IString, IString)]>,
     fragment: VNodeFragment,
+    handlers: Rc<[(&'static str, Callback)]>,
+    container: Option<web_sys::Node>,
 }
 
 impl VNodeElement {
@@ -234,23 +203,37 @@ impl VNodeElement {
             class,
             dyn_attrs,
             fragment,
+            handlers,
             ..
         } = self;
 
         log!("create element: {tag}");
         let node = document().create_element(tag).unwrap();
+
         Self::set_class(&node, &class);
+
         for (attr_name, attr_value) in dyn_attrs.iter() {
             node.set_attribute(attr_name, attr_value).unwrap();
         }
+
         let fragment = fragment.create_dom(&node);
         container.append_child(&node).unwrap();
+
+        for (event_type, callback) in handlers.iter() {
+            node.add_event_listener_with_callback(
+                event_type,
+                callback.closure.as_ref().as_ref().unchecked_ref(),
+            )
+            .unwrap();
+        }
 
         Self {
             node: Some(node),
             class,
             dyn_attrs,
             fragment,
+            handlers,
+            container: Some(container.clone()),
             ..self
         }
     }
@@ -274,13 +257,17 @@ impl VNodeElement {
             class,
             dyn_attrs,
             fragment,
+            handlers,
+            container,
         } = self;
         let node = node.unwrap();
 
         log!("update element: {tag}");
+
         if class != new_vnode.class {
             Self::set_class(&node, &new_vnode.class);
         }
+
         dyn_attrs
             .iter()
             .map(|(x, _)| x)
@@ -305,6 +292,25 @@ impl VNodeElement {
 
         let fragment = fragment.update(new_vnode.fragment);
 
+        handlers.iter().for_each(|(event_type, callback)| {
+            node.remove_event_listener_with_callback(
+                event_type,
+                callback.closure.as_ref().as_ref().unchecked_ref(),
+            )
+            .unwrap();
+        });
+
+        new_vnode
+            .handlers
+            .iter()
+            .for_each(|(event_type, callback)| {
+                node.add_event_listener_with_callback(
+                    event_type,
+                    callback.closure.as_ref().as_ref().unchecked_ref(),
+                )
+                .unwrap();
+            });
+
         Self {
             tag,
             key: new_vnode.key,
@@ -312,15 +318,21 @@ impl VNodeElement {
             class: new_vnode.class,
             dyn_attrs: new_vnode.dyn_attrs,
             fragment,
+            handlers: new_vnode.handlers,
+            container,
         }
     }
 
-    pub fn node(&self) -> Option<&web_sys::Node> {
-        self.node.as_deref()
+    pub fn node(&self) -> Option<web_sys::Node> {
+        self.node.clone().map(|x| x.unchecked_into())
     }
 
     pub fn key(&self) -> Option<Key> {
         self.key
+    }
+
+    pub fn container(&self) -> Option<web_sys::Node> {
+        self.container.clone()
     }
 
     pub fn set_class(node: &web_sys::Element, class: &[IString]) {
@@ -340,6 +352,7 @@ impl VNodeElement {
 pub struct VNodeText {
     text: IString,
     node: Option<web_sys::Text>,
+    container: Option<web_sys::Node>,
 }
 
 impl VNodeText {
@@ -353,6 +366,7 @@ impl VNodeText {
         container.append_child(&node).unwrap();
         VNodeText {
             node: Some(node),
+            container: Some(container.clone()),
             ..self
         }
     }
@@ -374,15 +388,19 @@ impl VNodeText {
             Self {
                 text: new_vnode.text,
                 node: Some(node),
+                container: self.container,
             }
         } else {
             self
         }
     }
 
-    pub fn node(&self) -> Option<&web_sys::Node> {
-        // TODO why this one cant use as_deref?
-        self.node.as_ref().map(|x| x.unchecked_ref())
+    pub fn node(&self) -> Option<web_sys::Node> {
+        self.node.clone().map(|x| x.unchecked_into())
+    }
+
+    pub fn container(&self) -> Option<web_sys::Node> {
+        self.container.clone()
     }
 }
 
@@ -458,16 +476,16 @@ impl VNodeFragment {
                         .enumerate()
                         .find(|(_, x)| x.key() == Some(key))
                     {
-                        fragment.append_child(old_child.node().unwrap()).unwrap();
+                        fragment.append_child(&old_child.node().unwrap()).unwrap();
                         to_remove[old_pos] = false;
-                        old_child.clone().update(new_child, &fragment)
+                        old_child.clone().update(new_child)
                     } else {
                         new_child.create_dom(&fragment)
                     }
                 } else if let Some(old_child) = old_children.get(new_pos) {
-                    fragment.append_child(old_child.node().expect("1")).unwrap();
+                    fragment.append_child(&old_child.node().unwrap()).unwrap();
                     to_remove[new_pos] = false;
-                    old_child.clone().update(new_child, &fragment)
+                    old_child.clone().update(new_child)
                 } else {
                     new_child.create_dom(&fragment)
                 });
@@ -492,8 +510,52 @@ impl VNodeFragment {
         }
     }
 
-    pub fn node(&self) -> &web_sys::Node {
-        self.fragment.unchecked_ref()
+    pub fn node(&self) -> web_sys::Node {
+        self.fragment.clone().unchecked_into()
+    }
+
+    pub fn container(&self) -> Option<web_sys::Node> {
+        self.container.clone()
+    }
+}
+
+#[derive(Clone)]
+pub struct VNodeComponent {
+    component: Rc<dyn Component>,
+    type_id: TypeId,
+    vnode: Rc<RefCell<VNode>>,
+}
+
+impl VNodeComponent {
+    pub fn create_dom(self: Rc<Self>, container: &web_sys::Node) -> Rc<Self> {
+        self.vnode
+            .replace(self.component.render(self.clone()).create_dom(container));
+        self
+    }
+
+    pub fn remove_dom(self: Rc<Self>) -> Rc<Self> {
+        self.vnode.replace(self.vnode.borrow().clone().remove_dom());
+        self
+    }
+
+    pub fn update(self: Rc<Self>, new_vnode: Self) -> Rc<Self> {
+        if self.component.update(new_vnode.component) {
+            self.vnode.replace(
+                self.vnode
+                    .borrow()
+                    .clone()
+                    .update(self.component.render(self.clone())),
+            );
+        }
+        self
+    }
+
+    pub fn node(&self) -> Option<web_sys::Node> {
+        self.vnode.borrow().node()
+    }
+
+    pub fn container(&self) -> Option<web_sys::Node> {
+        self.vnode.borrow().container()
     }
 }
 
@@ -503,6 +565,7 @@ pub struct VNodeElementBuilder {
     class: Vec<IString>,
     dyn_attrs: HashMap<IString, IString>,
     children: Vec<VNode>,
+    handlers: Vec<(&'static str, Callback)>,
 }
 
 impl VNodeElementBuilder {
@@ -532,6 +595,11 @@ impl VNodeElementBuilder {
     pub fn add_child(&mut self, vnode: impl Into<VNode>, additional: usize) -> &mut Self {
         self.children.reserve_exact(additional);
         self.children.push(vnode.into());
+        self
+    }
+
+    pub fn set_attr_onclick(&mut self, callback: impl Into<Callback>) -> &mut Self {
+        self.handlers.push(("click", callback.into()));
         self
     }
 
@@ -565,6 +633,8 @@ impl VNodeElementBuilder {
                 children: std::mem::take(&mut self.children),
                 container: None,
             },
+            handlers: Rc::from(std::mem::take(&mut self.handlers)),
+            container: None,
         }))
     }
 }
@@ -601,7 +671,7 @@ impl VNodeFragmentBuilder {
 
 pub trait Component: AsAnyRc {
     fn update(&self, other: Rc<dyn Component>) -> bool;
-    fn render(&self) -> VNode;
+    fn render(&self, vnode_comp: Rc<VNodeComponent>) -> VNode;
 }
 
 pub trait AsAnyRc {
@@ -646,8 +716,102 @@ impl<T: PureComponent + Clone + PartialEq + 'static> Component for VNodePureComp
         }
     }
 
-    fn render(&self) -> VNode {
+    fn render(&self, _: Rc<VNodeComponent>) -> VNode {
         self.component.borrow().render()
+    }
+}
+
+pub trait StatefulComponent {
+    fn update(&mut self, other: Self) -> bool;
+    fn render(&self, context: StatefulComponentHandler<Self>) -> VNode
+    where
+        Self: Sized;
+}
+
+#[derive(Clone)]
+pub struct VNodeStatefulComponent<T: StatefulComponent> {
+    component: RefCell<T>,
+    state: Rc<RefCell<HashMap<TypeId, Box<dyn Any>>>>,
+}
+
+impl<T: StatefulComponent + 'static> VNodeStatefulComponent<T> {
+    pub fn new(component: T) -> Self {
+        Self {
+            component: RefCell::new(component),
+            state: Default::default(),
+        }
+    }
+}
+
+impl<T: StatefulComponent + Clone + 'static> Component for VNodeStatefulComponent<T> {
+    fn update(&self, other: Rc<dyn Component>) -> bool {
+        let other: Rc<Self> = Rc::downcast(other.as_any_rc()).unwrap();
+        let other = Rc::unwrap_or_clone(other);
+        if self
+            .component
+            .borrow_mut()
+            .update(other.component.into_inner())
+        {
+            true
+        } else {
+            false
+        }
+    }
+
+    fn render(&self, vnode_comp: Rc<VNodeComponent>) -> VNode {
+        let vnode_comp = Rc::downgrade(&vnode_comp);
+        self.component.borrow().render(StatefulComponentHandler {
+            vnode_comp,
+            phantom: std::marker::PhantomData,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct StatefulComponentHandler<C> {
+    vnode_comp: Weak<VNodeComponent>,
+    phantom: std::marker::PhantomData<C>,
+}
+
+impl<C: StatefulComponent + 'static> StatefulComponentHandler<C> {
+    pub fn update(&self) {
+        let vnode_comp = self.vnode_comp.upgrade().unwrap();
+        let new_vnode = vnode_comp.component.render(vnode_comp.clone());
+        assert!(matches!(new_vnode, VNode::Element(_)));
+        let this = &vnode_comp;
+        assert!(new_vnode.node().is_none());
+        assert!(this.vnode.borrow().node().is_some());
+        assert!(this.vnode.borrow().container().is_some());
+        let vnode = this.vnode.borrow().clone().update(new_vnode);
+        this.vnode.replace(vnode);
+    }
+
+    pub fn with_state<T: Default + 'static, R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let vnode_comp = self.vnode_comp.upgrade().unwrap();
+        let component: Rc<VNodeStatefulComponent<C>> =
+            Rc::downcast(vnode_comp.component.clone().as_any_rc()).unwrap();
+        let mut guard = component.state.borrow_mut();
+        let state = guard
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::new(T::default()))
+            .downcast_mut::<T>()
+            .unwrap();
+        (f)(state)
+    }
+}
+
+#[derive(Clone)]
+pub struct Callback {
+    closure: Rc<Closure<dyn FnMut()>>,
+}
+
+impl implicit_clone::ImplicitClone for Callback {}
+
+impl<F: FnMut() + 'static> From<F> for Callback {
+    fn from(f: F) -> Callback {
+        Callback {
+            closure: Rc::new(Closure::new(f)),
+        }
     }
 }
 
@@ -660,6 +824,7 @@ pub mod html_context {
     pub type li = super::VNode;
     pub type br = super::VNode;
     pub type p = super::VNode;
+    pub type button = super::VNode;
     pub type Text = super::VNode;
     pub type Fragment = super::VNodeFragment;
 }
@@ -668,10 +833,14 @@ pub mod prelude {
     pub use super::html_context;
     pub use super::log;
     pub use super::AsAnyRc;
+    pub use super::Callback;
     pub use super::Component;
     pub use super::PureComponent;
+    pub use super::StatefulComponent;
+    pub use super::StatefulComponentHandler;
     pub use super::VNode;
     pub use super::VNodePureComponent;
+    pub use super::VNodeStatefulComponent;
     pub use implicit_clone::unsync::*;
     pub use yo_html::html;
 }

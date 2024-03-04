@@ -6,6 +6,8 @@ fn run_app() {
 
     log("Hello World!");
 
+    // Pure component
+
     pub struct MyComponentBuilder<T> {
         value: Option<T>,
     }
@@ -41,6 +43,75 @@ fn run_app() {
         }
     }
 
+    // Stateful component
+
+    pub struct CounterBuilder {
+        min: Option<i32>,
+        max: Option<i32>,
+    }
+
+    impl CounterBuilder {
+        pub fn set_attr_min(&mut self, min: i32) -> &mut Self {
+            self.min.replace(min);
+            self
+        }
+        pub fn set_attr_max(&mut self, max: i32) -> &mut Self {
+            self.max.replace(max);
+            self
+        }
+        pub fn finish(&mut self) -> VNodeStatefulComponent<Counter> {
+            VNodeStatefulComponent::new(Counter {
+                min: self.min,
+                max: self.max,
+            })
+        }
+    }
+
+    #[derive(PartialEq, Clone)]
+    pub struct Counter {
+        min: Option<i32>,
+        max: Option<i32>,
+    }
+
+    impl Counter {
+        pub fn builder(_tag: &'static str) -> CounterBuilder {
+            CounterBuilder {
+                min: None,
+                max: None,
+            }
+        }
+    }
+
+    impl StatefulComponent for Counter {
+        fn update(&mut self, other: Self) -> bool {
+            let should_update = *self != other;
+            *self = other;
+            should_update
+        }
+        fn render(&self, context: StatefulComponentHandler<Self>) -> VNode {
+            let range: IString = match (self.min, self.max) {
+                (Some(min), Some(max)) => format!("{min}-{max}").into(),
+                (Some(min), _) => format!("{min}-").into(),
+                (_, Some(max)) => format!("-{max}").into(),
+                (None, None) => "-".into(),
+            };
+            let value = context.with_state(|x: &mut i32| *x);
+            let callback = Callback::from(move || {
+                log("click!");
+                //drop(context.clone());
+                context.with_state(|x: &mut i32| *x += 1);
+                context.update();
+            });
+            html! {
+                <div>
+                    <p>{"Counter ("}{range}{"): "}("{}", value)</p>
+                    <button onclick={callback}>{"Increase"}</button>
+                    <button>{"Decrease"}</button>
+                </div>
+            }
+        }
+    }
+
     fn render(name: impl Into<IString>, swap: bool) -> VNode {
         let mut text1 = html! { <span key="hello" style="font-weight: bold;">{"Hello"}</span> };
         let mut text2 = html! { <span key="name">{name.into()}</span> };
@@ -68,6 +139,7 @@ fn run_app() {
             {stuff2}
             </ul>
             <MyComponent<u32> value=42 />
+            <Counter min=0 />
             <>{"Footer"}</>
             </>
         }
@@ -77,7 +149,10 @@ fn run_app() {
     let document = window.document().unwrap();
     let body = document.body().unwrap();
     let app = render("World", false).create_dom(&body);
-    let app = app.update(render("Q", true), &body);
-    let app = app.update(render("World", false), &body);
-    drop(app);
+    let app = app.update(render("Q", true));
+    let app = app.update(render("World", false));
+    thread_local! {
+        static APP: std::cell::RefCell<VNode> = Default::default();
+    }
+    APP.replace(app);
 }
