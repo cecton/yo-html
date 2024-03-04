@@ -850,9 +850,12 @@ impl<C: StatefulComponent + 'static> StatefulComponentHandler<C> {
         res
     }
 
-    pub fn callback(&self, mut f: impl FnMut(&Self) + 'static) -> Callback {
+    pub fn callback<T: Default + 'static>(
+        &self,
+        mut f: impl FnMut(&Self, &mut T) + 'static,
+    ) -> Callback {
         let context = self.clone();
-        Callback::from(move || (f)(&context))
+        Callback::from(move || context.with_state_mut(|state: &mut T| (f)(&context, state)))
     }
 }
 

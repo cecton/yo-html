@@ -96,13 +96,13 @@ fn run_app() {
                 (None, None) => "-".into(),
             };
             let value = context.with_state(|x: &i32| *x);
-            let inc_callback = context.callback(|context| {
+            let inc_callback = context.callback(|_, x: &mut i32| {
                 log("click!");
-                context.with_state_mut(|x: &mut i32| *x += 1);
+                *x += 1;
             });
-            let dec_callback = context.callback(|context| {
+            let dec_callback = context.callback(|_, x: &mut i32| {
                 log("click!");
-                context.with_state_mut(|x: &mut i32| *x -= 1);
+                *x -= 1;
             });
             html! {
                 <div>
