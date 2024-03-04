@@ -88,25 +88,27 @@ fn run_app() {
             *self = other;
             should_update
         }
-        fn render(&self, context: StatefulComponentHandler<Self>) -> VNode {
+        fn render(&self, context: &StatefulComponentHandler<Self>) -> VNode {
             let range: IString = match (self.min, self.max) {
                 (Some(min), Some(max)) => format!("{min}-{max}").into(),
                 (Some(min), _) => format!("{min}-").into(),
                 (_, Some(max)) => format!("-{max}").into(),
                 (None, None) => "-".into(),
             };
-            let value = context.with_state(|x: &mut i32| *x);
-            let callback = Callback::from(move || {
+            let value = context.with_state(|x: &i32| *x);
+            let inc_callback = context.callback(|context| {
                 log("click!");
-                //drop(context.clone());
-                context.with_state(|x: &mut i32| *x += 1);
-                context.update();
+                context.with_state_mut(|x: &mut i32| *x += 1);
+            });
+            let dec_callback = context.callback(|context| {
+                log("click!");
+                context.with_state_mut(|x: &mut i32| *x -= 1);
             });
             html! {
                 <div>
                     <p>{"Counter ("}{range}{"): "}("{}", value)</p>
-                    <button onclick={callback}>{"Increase"}</button>
-                    <button>{"Decrease"}</button>
+                    <button onclick={inc_callback}>{"Increase"}</button>
+                    <button onclick={dec_callback}>{"Decrease"}</button>
                 </div>
             }
         }

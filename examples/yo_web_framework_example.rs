@@ -98,6 +98,8 @@ impl<T: Component + 'static> From<T> for VNode {
             component: Rc::new(component),
             type_id: TypeId::of::<T>(),
             vnode: Default::default(),
+            refresh_callback: Default::default(),
+            refresh_callback_id: Default::default(),
         }))
     }
 }
@@ -524,12 +526,25 @@ pub struct VNodeComponent {
     component: Rc<dyn Component>,
     type_id: TypeId,
     vnode: Rc<RefCell<VNode>>,
+    refresh_callback: Rc<RefCell<Option<Closure<dyn FnMut()>>>>,
+    refresh_callback_id: Rc<RefCell<Option<std::num::NonZeroI32>>>,
 }
 
 impl VNodeComponent {
     pub fn create_dom(self: Rc<Self>, container: &web_sys::Node) -> Rc<Self> {
         self.vnode
             .replace(self.component.render(self.clone()).create_dom(container));
+        let vnode_comp = self.clone();
+        self.refresh_callback.replace(Some(Closure::new(move || {
+            let new_vnode = vnode_comp.component.render(vnode_comp.clone());
+            assert!(matches!(new_vnode, VNode::Element(_)));
+            let this = &vnode_comp;
+            assert!(new_vnode.node().is_none());
+            assert!(this.vnode.borrow().node().is_some());
+            assert!(this.vnode.borrow().container().is_some());
+            let vnode = this.vnode.borrow().clone().update(new_vnode);
+            this.vnode.replace(vnode);
+        })));
         self
     }
 
@@ -556,6 +571,25 @@ impl VNodeComponent {
 
     pub fn container(&self) -> Option<web_sys::Node> {
         self.vnode.borrow().container()
+    }
+
+    pub fn refresh(&self) {
+        let window = window();
+        if let Some(id) = self.refresh_callback_id.take() {
+            window.cancel_animation_frame(id.into()).unwrap();
+        }
+        let id = window
+            .request_animation_frame(
+                self.refresh_callback
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .unchecked_ref(),
+            )
+            .unwrap();
+        self.refresh_callback_id
+            .replace(Some(id.try_into().unwrap()));
     }
 }
 
@@ -723,7 +757,7 @@ impl<T: PureComponent + Clone + PartialEq + 'static> Component for VNodePureComp
 
 pub trait StatefulComponent {
     fn update(&mut self, other: Self) -> bool;
-    fn render(&self, context: StatefulComponentHandler<Self>) -> VNode
+    fn render(&self, context: &StatefulComponentHandler<Self>) -> VNode
     where
         Self: Sized;
 }
@@ -759,32 +793,50 @@ impl<T: StatefulComponent + Clone + 'static> Component for VNodeStatefulComponen
     }
 
     fn render(&self, vnode_comp: Rc<VNodeComponent>) -> VNode {
-        self.component.borrow().render(StatefulComponentHandler {
-            vnode_comp,
-            phantom: std::marker::PhantomData,
-        })
+        self.component
+            .borrow()
+            .render(&StatefulComponentHandler::new(vnode_comp))
     }
 }
 
-#[derive(Clone)]
 pub struct StatefulComponentHandler<C> {
     vnode_comp: Rc<VNodeComponent>,
     phantom: std::marker::PhantomData<C>,
 }
 
+impl<C> Clone for StatefulComponentHandler<C> {
+    fn clone(&self) -> Self {
+        Self::new(self.vnode_comp.clone())
+    }
+}
+
+impl<C> StatefulComponentHandler<C> {
+    fn new(vnode_comp: Rc<VNodeComponent>) -> Self {
+        Self {
+            vnode_comp,
+            phantom: Default::default(),
+        }
+    }
+}
+
 impl<C: StatefulComponent + 'static> StatefulComponentHandler<C> {
     pub fn update(&self) {
-        let new_vnode = self.vnode_comp.component.render(self.vnode_comp.clone());
-        assert!(matches!(new_vnode, VNode::Element(_)));
-        let this = &self.vnode_comp;
-        assert!(new_vnode.node().is_none());
-        assert!(this.vnode.borrow().node().is_some());
-        assert!(this.vnode.borrow().container().is_some());
-        let vnode = this.vnode.borrow().clone().update(new_vnode);
-        this.vnode.replace(vnode);
+        self.vnode_comp.refresh();
     }
 
-    pub fn with_state<T: Default + 'static, R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+    pub fn with_state<T: Default + 'static, R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        let component: Rc<VNodeStatefulComponent<C>> =
+            Rc::downcast(self.vnode_comp.component.clone().as_any_rc()).unwrap();
+        let mut guard = component.state.borrow_mut();
+        let state = guard
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::new(T::default()))
+            .downcast_ref::<T>()
+            .unwrap();
+        (f)(state)
+    }
+
+    pub fn with_state_mut<T: Default + 'static, R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         let component: Rc<VNodeStatefulComponent<C>> =
             Rc::downcast(self.vnode_comp.component.clone().as_any_rc()).unwrap();
         let mut guard = component.state.borrow_mut();
@@ -793,7 +845,14 @@ impl<C: StatefulComponent + 'static> StatefulComponentHandler<C> {
             .or_insert_with(|| Box::new(T::default()))
             .downcast_mut::<T>()
             .unwrap();
-        (f)(state)
+        let res = (f)(state);
+        self.update();
+        res
+    }
+
+    pub fn callback(&self, mut f: impl FnMut(&Self) + 'static) -> Callback {
+        let context = self.clone();
+        Callback::from(move || (f)(&context))
     }
 }
 
