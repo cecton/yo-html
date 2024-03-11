@@ -122,7 +122,7 @@ impl HtmlElement {
                     .collect::<Vec<_>>();
 
                 quote::quote! {
-                    Fragment::builder()
+                    Fragment::builder("")
                         #(#children)*
                         .finish()
                 }

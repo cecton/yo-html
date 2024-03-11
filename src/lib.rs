@@ -8,7 +8,7 @@ pub fn html(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             {
                 use html_context::*;
 
-                Fragment::from([])
+                Fragment::builder("").finish()
             }
         }
         .into();

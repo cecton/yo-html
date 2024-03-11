@@ -12,15 +12,15 @@ fn run_app() {
         value: Option<T>,
     }
 
-    impl<T: 'static> MyComponentBuilder<T> {
+    impl<T: PartialEq + Clone + 'static> MyComponentBuilder<T> {
         pub fn set_attr_value(&mut self, value: T) -> &mut Self {
             self.value.replace(value.into());
             self
         }
-        pub fn finish(&mut self) -> VNodePureComponent<MyComponent<T>> {
-            VNodePureComponent::new(MyComponent {
+        pub fn finish(&mut self) -> VNode {
+            VNode::from(VNodePureComponent::new(MyComponent {
                 value: self.value.take().expect("missing property value"),
-            })
+            }))
         }
     }
 
@@ -59,11 +59,11 @@ fn run_app() {
             self.max.replace(max);
             self
         }
-        pub fn finish(&mut self) -> VNodeStatefulComponent<Counter> {
-            VNodeStatefulComponent::new(Counter {
+        pub fn finish(&mut self) -> VNode {
+            VNode::from(VNodeStatefulComponent::new(Counter {
                 min: self.min,
                 max: self.max,
-            })
+            }))
         }
     }
 
@@ -96,11 +96,11 @@ fn run_app() {
                 (None, None) => "-".into(),
             };
             let value = context.with_state(|x: &i32| *x);
-            let inc_callback = context.callback(|_, x: &mut i32| {
+            let inc_callback = context.callback(|_, x: &mut i32, _: web_sys::Event| {
                 log("click!");
                 *x += 1;
             });
-            let dec_callback = context.callback(|_, x: &mut i32| {
+            let dec_callback = context.callback(|_, x: &mut i32, _: web_sys::Event| {
                 log("click!");
                 *x -= 1;
             });
