@@ -1,11 +1,18 @@
 [package]
 name = "yo-html"
 version = "0.1.0"
+authors = ["Cecile Tonglet <cecile.tonglet@cecton.com>"]
+license = "MIT OR Apache-2.0"
 edition = "2021"
 autoexamples = false
 rust-version = "1.76"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "JSX-like macro similar to what you can find in React or Yew but without framework nor trait."
+repository = "https://github.com/cecton/yo-html"
+homepage = "https://github.com/cecton/yo-html"
+documentation = "https://docs.rs/yo-html"
+readme = "README.md"
+keywords = ["html", "jsx", "react", "proc-macro", "frameworkless"]
+categories = ["web-programming"]
 
 [lib]
 proc-macro = true

@@ -114,6 +114,8 @@ fn run_app() {
         }
     }
 
+    // main program for testing purpose
+
     fn render(name: impl Into<IString>, swap: bool) -> VNode {
         let mut text1 = html! { <span key="hello" style="font-weight: bold;">{"Hello"}</span> };
         let mut text2 = html! { <span key="name">{name.into()}</span> };
@@ -147,10 +149,15 @@ fn run_app() {
         }
     }
 
+    // startup
+
     let window = web_sys::window().unwrap();
     let document = window.document().unwrap();
     let body = document.body().unwrap();
     let app = render("World", false).create_dom(&body);
+
+    // some updates for testing purpose
+
     let app = app.update(render("Q", true));
     let _ = app.update(render("World", false));
 }

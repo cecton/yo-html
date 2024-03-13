@@ -38,7 +38,7 @@ impl<const N: usize> From<[VNode; N]> for VNode {
 }
 
 impl VNode {
-    pub fn builder(_tag: &'static str, _id: u64) -> VNodeBuilder {
+    pub fn builder(_tag: &'static str) -> VNodeBuilder {
         VNodeBuilder::default()
     }
 }
@@ -115,7 +115,7 @@ pub struct MyComponent<T = ()> {
 }
 
 impl<T> MyComponent<T> {
-    pub fn builder(_tag: &'static str, _id: u64) -> MyComponentBuilder<T> {
+    pub fn builder(_tag: &'static str) -> MyComponentBuilder<T> {
         MyComponentBuilder {
             phantom: std::marker::PhantomData,
         }

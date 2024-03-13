@@ -4,6 +4,8 @@ pub mod yo_web_framework_example;
 fn run_app() {
     use yo_web_framework_example::prelude::*;
 
+    // Item in the groceries list
+
     #[derive(Default)]
     struct ItemBuilder {
         key: Option<Key>,
@@ -103,6 +105,8 @@ fn run_app() {
         count: u32,
     }
 
+    // The app "groceries"
+
     struct AppBuilder;
 
     impl AppBuilder {
@@ -167,6 +171,8 @@ fn run_app() {
     struct AppState {
         list: Vec<(IString, u32)>,
     }
+
+    // startup
 
     let window = web_sys::window().unwrap();
     let document = window.document().unwrap();
